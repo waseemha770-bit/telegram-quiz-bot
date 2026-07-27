@@ -1,0 +1,8 @@
+{
+  "name": "telegram-quiz-bot",
+  "version": "1.0.0",
+  "description": "Telegram Quiz Bot on Vercel",
+  "dependencies": {
+    "@vercel/kv": "^3.0.0"
+  }
+}
