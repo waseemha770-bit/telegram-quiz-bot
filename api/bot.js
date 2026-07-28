@@ -3,15 +3,21 @@ import * as XLSX from 'xlsx';
 
 let cachedDb = null;
 
+// التعديل 1: إضافة نظام لاكتشاف فشل الاتصال بقاعدة البيانات بدلاً من تجميد البوت
 async function connectToDatabase() {
   if (cachedDb) return cachedDb;
-  const client = new MongoClient(process.env.MONGODB_URI);
-  await client.connect();
-  cachedDb = client.db('quiz_bot_db'); 
-  return cachedDb;
+  try {
+    // السيرفر سينتظر 5 ثوانٍ فقط، إذا كانت الحماية تمنعه سيتجاوز الأمر
+    const client = new MongoClient(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+    await client.connect();
+    cachedDb = client.db('quiz_bot_db'); 
+    return cachedDb;
+  } catch (error) {
+    console.error("Database connection blocked by firewall:", error);
+    return null; // إرجاع قيمة فارغة لنعرف أن الاتصال فشل
+  }
 }
 
-// دالة لخلط الأزرار عشوائياً
 function shuffleArray(array) {
   const arr = [...array];
   for (let i = arr.length - 1; i > 0; i--) {
@@ -23,7 +29,7 @@ function shuffleArray(array) {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(200).send('✅ البوت يعمل بنجاح (النسخة النهائية الذكية)!');
+    return res.status(200).send('✅ البوت يعمل وجاهز لاختبار الاتصال!');
   }
 
   const token = process.env.TELEGRAM_TOKEN;
@@ -73,12 +79,20 @@ export default async function handler(req, res) {
 
   try {
     const db = await connectToDatabase();
+
+    // التعديل 2: إذا كانت قاعدة البيانات مغلقة بسبب الـ IP، سيرد عليك البوت في تيليجرام
+    if (!db) {
+      if (body.message) {
+        const chatId = body.message.chat.id.toString();
+        await sendMessage(chatId, "⚠️ *تنبيه من سيرفر Vercel:*\n\nالربط مع تيليجرام سليم 100% والسيرفر يعمل! 🚀\nولكن قاعدة بيانات MongoDB ترفض دخولنا بسبب جدار الحماية (Network Access).\n\nيجب الدخول لموقع MongoDB وإضافة الآي بي `0.0.0.0/0` لكي أتمكن من قراءة الأسئلة.");
+      }
+      return res.status(200).json({ success: true });
+    }
+
     const usersCollection = db.collection('users');
     const questionsCollection = db.collection('questions');
 
-    // ----------------------------------------------------
-    // معالجة الأزرار الشفافة للإجابات (التفاعل البصري ومنع التكرار)
-    // ----------------------------------------------------
+    // --- بقية كود البوت الأساسي ---
     if (body.callback_query) {
       const callbackQuery = body.callback_query;
       const callbackId = callbackQuery.id;
@@ -165,9 +179,6 @@ export default async function handler(req, res) {
       let userState = await usersCollection.findOne({ userId: chatId });
       let currentState = userState ? userState.state : null;
 
-      // ----------------------------------------------------
-      // الاستيراد الديناميكي للإكسل
-      // ----------------------------------------------------
       if (document && chatId === adminId && currentState === "WAITING_FOR_EXCEL") {
         const fileName = document.file_name;
         if (!fileName.endsWith('.xlsx')) {
@@ -231,9 +242,7 @@ export default async function handler(req, res) {
           if (bulkQuestions.length > 0) {
             await questionsCollection.deleteMany({});
             await questionsCollection.insertMany(bulkQuestions);
-            // تصفير ذاكرة الإجابات لكل المستخدمين عند رفع بنك أسئلة جديد
             await usersCollection.updateMany({}, { $set: { answered: [] } });
-            
             await sendMessage(chatId, `🎉 *تمت المزامنة بنجاح!*\nتم استيراد ${bulkQuestions.length} سؤالاً وتحديث بنك الأسئلة.`, replyKeyboard);
           } else {
             await sendMessage(chatId, "❌ لم يتم العثور على أسئلة قابلة للقراءة.", replyKeyboard);
@@ -243,9 +252,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true });
       }
 
-      // ----------------------------------------------------
-      // تصدير الإكسل الديناميكي
-      // ----------------------------------------------------
       if ((text === '📤 تصدير إكسل' || text === '/export') && chatId === adminId) {
         const allQuestions = await questionsCollection.find({}).toArray();
         if (allQuestions.length === 0) {
@@ -285,9 +291,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true });
       }
 
-      // ----------------------------------------------------
-      // أوامر المسابقة وسحب الأسئلة
-      // ----------------------------------------------------
       if (text === '/start' || text === '🚀 ابدأ من جديد') {
         await usersCollection.updateOne({ userId: chatId }, { $set: { state: null } });
         await sendMessage(chatId, `أهلاً بك يا *${userName}* في منصة المسابقات التفاعلية! 🎓\n\nاضغط على (سؤال جديد) للبدء:`, replyKeyboard);
@@ -306,7 +309,7 @@ export default async function handler(req, res) {
         ]).toArray();
         
         if (randomQ.length === 0) {
-          await sendMessage(chatId, "🎉 *تهانينا!* لقد أجبت على جميع الأسئلة المتاحة في بنك المعلومات. انتظر حتى يتم إضافة أسئلة جديدة.", replyKeyboard);
+          await sendMessage(chatId, "🎉 *تهانينا!* لقد أجبت على جميع الأسئلة المتاحة في بنك المعلومات.", replyKeyboard);
           return res.status(200).json({ success: true });
         }
         
@@ -349,7 +352,7 @@ export default async function handler(req, res) {
       }
     }
   } catch (error) {
-    console.error("Database or execution error:", error);
+    console.error("Execution error:", error);
   }
 
   return res.status(200).json({ success: true });
