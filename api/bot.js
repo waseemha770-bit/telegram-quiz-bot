@@ -1,15 +1,28 @@
-import { kv } from '@vercel/kv';
+import { MongoClient } from 'mongodb';
+
+// الاحتفاظ بالاتصال نشطاً لتسريع الردود في بيئة Vercel
+let cachedDb = null;
+
+async function connectToDatabase() {
+  if (cachedDb) return cachedDb;
+  
+  // الاتصال بقاعدة البيانات باستخدام الرابط السري
+  const client = new MongoClient(process.env.MONGODB_URI);
+  await client.connect();
+  
+  // إنشاء/اختيار قاعدة بيانات باسم "quiz_bot_db"
+  cachedDb = client.db('quiz_bot_db'); 
+  return cachedDb;
+}
 
 export default async function handler(req, res) {
-  // 1. فحص حالة السيرفر (عند فتح الرابط في المتصفح)
   if (req.method !== 'POST') {
-    return res.status(200).send('✅ البوت يعمل بنجاح ومتصل بقاعدة بيانات Vercel KV!');
+    return res.status(200).send('✅ البوت يعمل بنجاح ومتصل بقاعدة بيانات MongoDB!');
   }
 
-  const token = process.env.TELEGRAM_TOKEN; // التوكن السري من إعدادات Vercel
+  const token = process.env.TELEGRAM_TOKEN;
   const body = req.body;
 
-  // 2. دالة مساعدة لإرسال الرسائل إلى تيليجرام
   async function sendMessage(chatId, text, keyboard = null) {
     const payload = { chat_id: chatId, text: text, parse_mode: "Markdown" };
     if (keyboard) payload.reply_markup = keyboard;
@@ -21,7 +34,6 @@ export default async function handler(req, res) {
     });
   }
 
-  // 3. دالة مساعدة لإظهار إشعارات منبثقة عند النقر على الأزرار
   async function answerCallback(callbackId, text) {
     const payload = { callback_query_id: callbackId, text: text, show_alert: true };
     await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
@@ -31,9 +43,11 @@ export default async function handler(req, res) {
     });
   }
 
-  // 4. معالجة الرسائل الواردة
   try {
-    // أ: إذا كانت رسالة نصية
+    // الاتصال بقاعدة البيانات واختيار جدول (collection) المستخدمين
+    const db = await connectToDatabase();
+    const usersCollection = db.collection('users');
+
     if (body.message) {
       const chatId = body.message.chat.id;
       const text = body.message.text;
@@ -52,39 +66,46 @@ export default async function handler(req, res) {
         await sendMessage(chatId, "🌍 *سؤال:*\n\nما هي عاصمة اليابان؟", keyboard);
       }
       else if (text === '/score') {
-        // جلب رصيد المستخدم من قاعدة البيانات
-        let currentScore = await kv.zscore('leaderboard', userName) || 0;
+        // جلب رصيد المستخدم من MongoDB
+        const user = await usersCollection.findOne({ userId: chatId });
+        const currentScore = user ? user.score : 0;
         await sendMessage(chatId, `🏆 يا *${userName}*، رصيدك الحالي هو: *${currentScore} نقطة*`);
       }
       else if (text === '/top') {
-        // جلب أفضل 10 لاعبين مرتبين من الأعلى للأقل
-        const leaders = await kv.zrange('leaderboard', 0, 9, { rev: true, withScores: true });
+        // جلب أفضل 10 لاعبين مرتبين تنازلياً حسب النقاط
+        const topUsers = await usersCollection.find().sort({ score: -1 }).limit(10).toArray();
         
-        if (!leaders || leaders.length === 0) {
+        if (topUsers.length === 0) {
           await sendMessage(chatId, "لا يوجد أي نقاط مسجلة حتى الآن.");
         } else {
           let topText = "🏆 *أفضل اللاعبين:*\n\n";
-          // ترتيب البيانات المستخرجة
-          for (let i = 0; i < leaders.length; i++) {
-            topText += `${i + 1}. ${leaders[i].member} - ${leaders[i].score} نقطة\n`;
+          for (let i = 0; i < topUsers.length; i++) {
+            topText += `${i + 1}. ${topUsers[i].name} - ${topUsers[i].score} نقطة\n`;
           }
           await sendMessage(chatId, topText);
         }
       }
     } 
-    // ب: إذا كانت نقرة على زر (Callback Query)
     else if (body.callback_query) {
       const callbackId = body.callback_query.id;
       const data = body.callback_query.data;
+      const chatId = body.callback_query.message.chat.id;
       const userName = body.callback_query.from.first_name || "مجهول";
 
       if (data === "correct") {
-        // قراءة الرصيد القديم، زيادة 10 نقاط، وحفظه مجدداً في لوحة الشرف
-        const currentScore = await kv.zscore('leaderboard', userName) || 0;
-        const newScore = currentScore + 10;
-        
-        // استخدام zadd لحفظ الاسم مع الرصيد كنظام ترتيب
-        await kv.zadd('leaderboard', { score: newScore, member: userName });
+        // الاتصال بقاعدة البيانات
+        const db = await connectToDatabase();
+        const usersCollection = db.collection('users');
+
+        // إضافة 10 نقاط للمستخدم (وإنشاء حسابه إن لم يكن موجوداً باستخدام upsert)
+        await usersCollection.updateOne(
+          { userId: chatId }, 
+          { 
+            $inc: { score: 10 }, 
+            $set: { name: userName } 
+          }, 
+          { upsert: true }
+        );
         
         await answerCallback(callbackId, "✅ إجابة صحيحة! تمت إضافة 10 نقاط لرصيدك.");
       } else if (data === "wrong") {
@@ -92,9 +113,8 @@ export default async function handler(req, res) {
       }
     }
   } catch (error) {
-    console.error("Error processing request:", error);
+    console.error("Database or execution error:", error);
   }
 
-  // 5. إرسال استجابة 200 لتيليجرام لإنهاء الطلب بنجاح (ضروري جداً)
   return res.status(200).json({ success: true });
 }
