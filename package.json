@@ -1,8 +1,9 @@
 {
   "name": "telegram-quiz-bot",
   "version": "1.0.0",
-  "description": "Telegram Quiz Bot with MongoDB",
+  "type": "module",
   "dependencies": {
-    "mongodb": "^6.3.0"
+    "mongodb": "^6.3.0",
+    "xlsx": "^0.18.5"
   }
 }
