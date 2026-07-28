@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, collection, getDocs, doc, setDoc, getDoc, writeBatch } from 'firebase/firestore';
+// السحر هنا: استخدمنا نسخة lite المخصصة لـ Vercel والتي لا تنقطع أبداً
+import { getFirestore, collection, getDocs, doc, setDoc, getDoc, writeBatch } from 'firebase/firestore/lite';
 import * as XLSX from 'xlsx';
 
 // إعداد الاتصال بـ Firebase
@@ -9,9 +10,7 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-
-// التعديل السحري لحل مشكلة Offline في Vercel
-const db = initializeFirestore(app, { experimentalForceLongPolling: true });
+const db = getFirestore(app);
 
 // دالة خلط الأسئلة
 function shuffleArray(array) {
@@ -25,7 +24,7 @@ function shuffleArray(array) {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(200).send('✅ البوت يعمل بنجاح ومربوط بـ Firebase (نسخة Vercel المحدثة)!');
+    return res.status(200).send('✅ البوت يعمل بنجاح ومربوط بـ Firebase Lite!');
   }
 
   const token = process.env.TELEGRAM_TOKEN;
@@ -141,7 +140,7 @@ export default async function handler(req, res) {
       let userData = userSnap.exists() ? userSnap.data() : {};
       let currentState = userData.state || null;
 
-      // استقبال ملف الإكسل 
+      // استقبال ملف الإكسل
       if (document && chatId === adminId && currentState === "WAITING_FOR_EXCEL") {
         const fileName = document.file_name;
         if (!fileName.endsWith('.xlsx')) {
