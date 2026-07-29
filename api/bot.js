@@ -73,10 +73,16 @@ function shuffleArray(array) {
 
 function cleanName(name) {
   if (!name) return 'عام';
-  // ✨ تحديث: عرض القسم الفرعي فقط في العنوان إذا وجد (بناءً على -)
   if (name.includes('-')) return name.split('-').pop().trim();
   if (name.includes(':')) return name.split(':').pop().trim();
   return name.replace(/المجموعة/g, '').replace(/قسم/g, '').replace(/الأولى/g, '').trim();
+}
+
+function cleanDisplayName(name) {
+  if (!name) return 'عام';
+  let cleaned = name.replace(/(المجموعة|مجموعة|قسم)\s*([0-9٠-٩]+|الأولى|الثانية|الثالثة|الرابعة|الخامسة|السادسة|السابعة|الثامنة|التاسعة|العاشرة)?/g, '');
+  cleaned = cleaned.replace(/^[:\-]+|[:\-]+$/g, '').trim();
+  return cleaned || 'عام';
 }
 
 function getRank(score) {
@@ -86,18 +92,38 @@ function getRank(score) {
   return "أسطورة المعرفة 🔥";
 }
 
-function buildDynamicKeyboard(buttonsArray, maxLength = 20) {
+// ✨ الخوارزمية الجديدة الذكية لتوزيع الأزرار بديناميكية تامة ✨
+function buildDynamicKeyboard(buttonsArray) {
   let inline_keyboard = [];
   let currentRow = [];
+  let currentRowChars = 0; // متتبع لعدد حروف السطر الحالي
+
   for (let btn of buttonsArray) {
-    if (btn.text.length > maxLength) {
-      if (currentRow.length > 0) { inline_keyboard.push(currentRow); currentRow = []; }
+    const textLen = btn.text.length;
+
+    // 1. إذا كان الزر طويلاً (أكثر من 16 حرف)، يعطى سطر كامل فوراً
+    if (textLen > 16) {
+      if (currentRow.length > 0) { 
+        inline_keyboard.push(currentRow); 
+        currentRow = []; 
+        currentRowChars = 0; 
+      }
       inline_keyboard.push([btn]);
     } else {
-      currentRow.push(btn);
-      if (currentRow.length === 2) { inline_keyboard.push(currentRow); currentRow = []; }
+      // 2. إذا كان الزر قصيراً، نتحقق من ازدحام السطر
+      // إذا كان السطر فيه زرين، أو مجموع الحروف سيتجاوز 32 حرفاً
+      if (currentRow.length >= 2 || (currentRowChars + textLen > 32)) {
+        inline_keyboard.push(currentRow);
+        currentRow = [btn];
+        currentRowChars = textLen;
+      } else {
+        // السطر يتسع بأريحية، أضف الزر بجوار أخيه
+        currentRow.push(btn);
+        currentRowChars += textLen;
+      }
     }
   }
+  // إرسال السطر الأخير إن وجد
   if (currentRow.length > 0) inline_keyboard.push(currentRow);
   return inline_keyboard;
 }
@@ -134,47 +160,39 @@ async function editTgMessage(chatId, messageId, text = null, replyMarkup = null)
 // ==========================================
 // 4. محرك الأسئلة والأقسام (Quiz Engine)
 // ==========================================
-
-// ✨ دالة عرض الأقسام الرئيسية ✨
 async function showCategories(chatId, isOwner, isAdmin, messageIdToEdit = null) {
   const qSnap = await getDocs(collection(db, "questions"));
   let allGroups = qSnap.docs.map(d => d.data().group || 'عام');
-  
-  // استخراج الأقسام الرئيسية (ما قبل الشرطة -)
   let mainCats = Array.from(new Set(allGroups.map(g => g.split('-')[0].trim())));
   
   if (mainCats.length === 0) return sendTgMessage(chatId, "لا توجد أسئلة متاحة حالياً.", getKeyboard(isOwner, isAdmin));
 
-  let catButtons = mainCats.map(m => ({ text: `📁 ${m}`, callback_data: `mcat_${m}` }));
-  let inline_keyboard = buildDynamicKeyboard(catButtons, 18); 
+  let catButtons = mainCats.map(m => ({ text: `📁 ${cleanDisplayName(m)}`, callback_data: `mcat_${m}` }));
+  let inline_keyboard = buildDynamicKeyboard(catButtons); 
 
   const text = "📚 *اختر القسم الرئيسي:*";
   if (messageIdToEdit) return editTgMessage(chatId, messageIdToEdit, text, { inline_keyboard });
   return sendTgMessage(chatId, text, { inline_keyboard });
 }
 
-// ✨ دالة عرض الأقسام الفرعية ✨
 async function showSubCategories(chatId, mainCat, messageIdToEdit, isOwner, isAdmin) {
   const qSnap = await getDocs(collection(db, "questions"));
   let allGroups = qSnap.docs.map(d => d.data().group || 'عام');
-  
-  // تصفية الأقسام لتشمل فقط التابعة للقسم الرئيسي المختار
   let subGroups = Array.from(new Set(allGroups.filter(g => g.split('-')[0].trim() === mainCat)));
   
-  // إذا لم يكن هناك قسم فرعي حقيقي، ابدأ فوراً
   if (subGroups.length === 1 && !subGroups[0].includes('-')) {
       return askQuestion(chatId, subGroups[0], messageIdToEdit, null, isOwner, isAdmin);
   }
 
   let catButtons = subGroups.map(g => {
-      let subName = g.includes('-') ? g.split('-')[1].trim() : g;
-      return { text: `📂 ${subName}`, callback_data: `cat_${g}` };
+      let subName = g.includes('-') ? g.split('-').pop().trim() : g;
+      return { text: `📂 ${cleanDisplayName(subName)}`, callback_data: `cat_${g}` };
   });
 
-  let inline_keyboard = buildDynamicKeyboard(catButtons, 18);
+  let inline_keyboard = buildDynamicKeyboard(catButtons);
   inline_keyboard.push([{ text: "🔙 رجوع للأقسام", callback_data: "back_to_maincat" }]);
 
-  return editTgMessage(chatId, messageIdToEdit, `📂 *القسم الرئيسي: ${mainCat}*\n\nاختر القسم الفرعي:`, { inline_keyboard });
+  return editTgMessage(chatId, messageIdToEdit, `📂 *القسم: ${cleanDisplayName(mainCat)}*\n\nاختر القسم الفرعي:`, { inline_keyboard });
 }
 
 async function sendQuestionToGroup(groupId, questionDoc, category) {
@@ -186,9 +204,9 @@ async function sendQuestionToGroup(groupId, questionDoc, category) {
   let rawButtons = [{ text: q.correct, callback_data: `c_${qId}_${timestamp}_${isGold}` }];
   (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
   rawButtons = shuffleArray(rawButtons);
-  let inline_keyboard = buildDynamicKeyboard(rawButtons, 20); 
+  let inline_keyboard = buildDynamicKeyboard(rawButtons); 
 
-  let displayCat = cleanName(category);
+  let displayCat = cleanDisplayName(category.includes('-') ? category.split('-').pop() : category);
   let qText = `📁 *${displayCat}*\n\n`;
   if (isGold === 1) qText += `🌟 *سؤال ذهبي! نقاط مضاعفة!* 🌟\n\n`;
   qText += `❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
@@ -206,7 +224,7 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
     if ((d.data().group || 'عام') === category && !answered.includes(d.id)) availableQ.push(d);
   });
 
-  let displayCat = cleanName(category);
+  let displayCat = cleanDisplayName(category.includes('-') ? category.split('-').pop() : category);
 
   if (availableQ.length === 0) {
     const endMsg = `🎉 لقد أتممت جميع أسئلة: *${displayCat}*`;
@@ -224,7 +242,7 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   let rawButtons = [{ text: q.correct, callback_data: `c_${qId}_${timestamp}_${isGold}` }];
   (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
   rawButtons = shuffleArray(rawButtons);
-  let inline_keyboard = buildDynamicKeyboard(rawButtons, 20); 
+  let inline_keyboard = buildDynamicKeyboard(rawButtons); 
 
   await setDoc(chatRef, { active_category: category }, { merge: true });
   
@@ -310,7 +328,7 @@ async function sendGraphicalChart(chatId) {
   if (totalPlays === 0) return sendTgMessage(chatId, "⚠️ لا توجد بيانات تفاعل كافية لرسم المخطط حتى الآن.");
 
   let sortedCats = Object.keys(categoryTotals).sort((a, b) => categoryTotals[b] - categoryTotals[a]).slice(0, 10);
-  let labels = sortedCats.map(c => cleanName(c));
+  let labels = sortedCats.map(c => cleanDisplayName(c.includes('-') ? c.split('-').pop() : c));
   let data = sortedCats.map(c => categoryTotals[c]);
 
   const chartConfig = {
@@ -339,7 +357,7 @@ async function sendGraphicalChart(chatId) {
   const payload = {
       chat_id: chatId,
       photo: chartUrl,
-      caption: `📊 *تقرير تفاعل المتسابقين*\n\nإجمالي الإجابات المسجلة: *${totalPlays}*\nالقسم الأكثر شعبية: *${cleanName(sortedCats[0])}*`,
+      caption: `📊 *تقرير تفاعل المتسابقين*\n\nإجمالي الإجابات المسجلة: *${totalPlays}*\nالقسم الأكثر شعبية: *${cleanDisplayName(sortedCats[0].includes('-') ? sortedCats[0].split('-').pop() : sortedCats[0])}*`,
       parse_mode: "Markdown"
   };
 
@@ -365,18 +383,15 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (data === "ignore") return answerTgCallback(callbackId, "⚠️ لا يمكنك الضغط هنا مجدداً.");
 
-  // ✨ الرجوع للقسم الرئيسي ✨
   if (data === "back_to_maincat") {
     return showCategories(chatId, isOwner, isAdmin, messageId);
   }
 
-  // ✨ اختيار القسم الرئيسي (عبر المستخدم) ✨
   if (data.startsWith("mcat_")) {
     const mainCat = data.replace("mcat_", "");
     return showSubCategories(chatId, mainCat, messageId, isOwner, isAdmin);
   }
 
-  // ✨ إرسال للمجموعة: الخطوة 1 (اختيار عشوائي أو محدد) ✨
   if (data === "bc_mode_rand" || data === "bc_mode_spec") {
     if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
     const isRandom = (data === "bc_mode_rand");
@@ -385,13 +400,12 @@ async function handleCallbackQuery(callbackQuery) {
     let mainCats = Array.from(new Set(allGroups.map(g => g.split('-')[0].trim())));
     
     let prefix = isRandom ? "rmcat_" : "smcat_";
-    let catButtons = mainCats.map(m => ({ text: `📁 ${m}`, callback_data: `${prefix}${m}` }));
-    let inline_keyboard = buildDynamicKeyboard(catButtons, 18);
-    const title = isRandom ? "🎲 اختر القسم الرئيسي (سؤال عشوائي):" : "🎯 اختر القسم الرئيسي (سؤال محدد):";
+    let catButtons = mainCats.map(m => ({ text: `📁 ${cleanDisplayName(m)}`, callback_data: `${prefix}${m}` }));
+    let inline_keyboard = buildDynamicKeyboard(catButtons);
+    const title = isRandom ? "🎲 اختر القسم (سؤال عشوائي):" : "🎯 اختر القسم (سؤال محدد):";
     return editTgMessage(chatId, messageId, title, { inline_keyboard });
   }
 
-  // ✨ إرسال للمجموعة: الخطوة 2 (تحديد القسم الفرعي بعد الرئيسي) ✨
   if (data.startsWith("rmcat_") || data.startsWith("smcat_")) {
     if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
     const isRandom = data.startsWith("rmcat_");
@@ -402,21 +416,20 @@ async function handleCallbackQuery(callbackQuery) {
     
     let prefix = isRandom ? "rcat_" : "scat_";
     let catButtons = subGroups.map(g => {
-        let subName = g.includes('-') ? g.split('-')[1].trim() : g;
-        return { text: `📂 ${subName}`, callback_data: `${prefix}${g}` };
+        let subName = g.includes('-') ? g.split('-').pop().trim() : g;
+        return { text: `📂 ${cleanDisplayName(subName)}`, callback_data: `${prefix}${g}` };
     });
-    let inline_keyboard = buildDynamicKeyboard(catButtons, 18);
+    let inline_keyboard = buildDynamicKeyboard(catButtons);
     inline_keyboard.push([{ text: "🔙 رجوع", callback_data: isRandom ? "bc_mode_rand" : "bc_mode_spec" }]);
     
-    return editTgMessage(chatId, messageId, `📂 *القسم الرئيسي: ${mainCat}*\n\nاختر القسم الفرعي لإرسال السؤال:`, { inline_keyboard });
+    return editTgMessage(chatId, messageId, `📂 *القسم: ${cleanDisplayName(mainCat)}*\n\nاختر القسم الفرعي لإرسال السؤال:`, { inline_keyboard });
   }
 
-  // ✨ إرسال عشوائي بعد تحديد القسم الفرعي ✨
   if (data.startsWith("rcat_")) {
     if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
     const category = data.replace("rcat_", "");
     const groupSnap = await getDoc(doc(db, "bot_settings", "linked_group"));
-    if (!groupSnap.exists()) return answerTgCallback(callbackId, "⚠️ لم تقم بربط أي مجموعة بعد. استخدم أمر /link داخل المجموعة.");
+    if (!groupSnap.exists()) return answerTgCallback(callbackId, "⚠️ لم تقم بربط أي مجموعة بعد.");
     const groupId = groupSnap.data().id;
     const qSnap = await getDocs(collection(db, "questions"));
     let matchingQ = [];
@@ -425,10 +438,10 @@ async function handleCallbackQuery(callbackQuery) {
     const randomDoc = matchingQ[Math.floor(Math.random() * matchingQ.length)];
     await sendQuestionToGroup(groupId, randomDoc, category);
     await answerTgCallback(callbackId, "✅ تم إرسال السؤال عشوائياً للمجموعة!");
-    return editTgMessage(chatId, messageId, `✅ تم إرسال سؤال عشوائي من قسم *${cleanName(category)}* إلى المجموعة بنجاح! 🚀`);
+    let disp = cleanDisplayName(category.includes('-') ? category.split('-').pop() : category);
+    return editTgMessage(chatId, messageId, `✅ تم إرسال سؤال عشوائي من قسم *${disp}* بنجاح! 🚀`);
   }
 
-  // ✨ استعراض الأسئلة المحددة بعد تحديد القسم الفرعي ✨
   if (data.startsWith("scat_")) {
     if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
     const category = data.replace("scat_", "");
@@ -437,14 +450,14 @@ async function handleCallbackQuery(callbackQuery) {
     qSnap.forEach(d => { if ((d.data().group || 'عام') === category) qList.push({ id: d.id, ...d.data() }); });
     if (qList.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
     
+    // تصغير نص الأزرار المعروضة للأسئلة المحددة
     let inline_keyboard = qList.map(q => ([{ text: q.question.length > 35 ? q.question.substring(0, 35) + '...' : q.question, callback_data: `send_q_${q.id}` }]));
     const mainCat = category.split('-')[0].trim();
     inline_keyboard.push([{ text: "🔙 رجوع للأقسام", callback_data: `smcat_${mainCat}` }]);
-    
-    return editTgMessage(chatId, messageId, `🎯 *اختر السؤال المطلوب إرساله من قسم (${cleanName(category)}):*`, { inline_keyboard });
+    let disp = cleanDisplayName(category.includes('-') ? category.split('-').pop() : category);
+    return editTgMessage(chatId, messageId, `🎯 *اختر السؤال المطلوب إرساله من قسم (${disp}):*`, { inline_keyboard });
   }
 
-  // ✨ إرسال السؤال المختار للمجموعة ✨
   if (data.startsWith("send_q_")) {
     if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
     const qId = data.replace("send_q_", "");
@@ -671,7 +684,6 @@ async function handleMessage(message) {
   
   if (isAdmin && (text === '👥 تقرير المتسابقين' || text === '👥 تقرير المتسابقين (إكسل)')) return exportUsersReport(chatId);
 
-  // ✨ تعديل: استخدام دالة showCategories الجديدة المدعومة بالأقسام الرئيسية ✨
   if (text === '🗂️ تغيير القسم') return showCategories(chatId, isOwner, isAdmin);
 
   if (text === '/quiz' || text === '🎮 سؤال جديد') {
@@ -698,7 +710,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة مع نظام التصفح الهرمي (أقسام رئيسية وفرعية)!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. الآن يتكيف حجم الأزرار بديناميكية مطلقة!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
