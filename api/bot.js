@@ -35,8 +35,9 @@ const ADMIN_KEYBOARD = {
     [{ text: "🎮 سؤال جديد" }, { text: "🗂️ تغيير القسم" }],
     [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
     [{ text: "👥 تقرير المتسابقين" }, { text: "📢 إرسال للمجموعة" }],
-    [{ text: "📈 إحصائيات التفاعل" }, { text: "🏆 لوحة الشرف" }],
-    [{ text: "📊 رصيدي الحالي" }, { text: "🚀 ابدأ من جديد" }]
+    [{ text: "📈 إحصائيات التفاعل" }, { text: "🔗 ربط بمجموعة" }],
+    [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
+    [{ text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -47,8 +48,8 @@ const OWNER_KEYBOARD = {
     [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
     [{ text: "👥 تقرير المتسابقين" }, { text: "⚙️ إدارة المشرفين" }],
     [{ text: "📢 إرسال للمجموعة" }, { text: "📈 إحصائيات التفاعل" }],
-    [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
-    [{ text: "🚀 ابدأ من جديد" }]
+    [{ text: "🏆 لوحة الشرف" }, { text: "🔗 ربط بمجموعة" }],
+    [{ text: "📊 رصيدي الحالي" }, { text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -92,16 +93,14 @@ function getRank(score) {
   return "أسطورة المعرفة 🔥";
 }
 
-// ✨ الخوارزمية الجديدة الذكية لتوزيع الأزرار بديناميكية تامة ✨
-function buildDynamicKeyboard(buttonsArray) {
+function buildDynamicKeyboard(buttonsArray, maxLength = 20) {
   let inline_keyboard = [];
   let currentRow = [];
-  let currentRowChars = 0; // متتبع لعدد حروف السطر الحالي
+  let currentRowChars = 0; 
 
   for (let btn of buttonsArray) {
     const textLen = btn.text.length;
 
-    // 1. إذا كان الزر طويلاً (أكثر من 16 حرف)، يعطى سطر كامل فوراً
     if (textLen > 16) {
       if (currentRow.length > 0) { 
         inline_keyboard.push(currentRow); 
@@ -110,20 +109,16 @@ function buildDynamicKeyboard(buttonsArray) {
       }
       inline_keyboard.push([btn]);
     } else {
-      // 2. إذا كان الزر قصيراً، نتحقق من ازدحام السطر
-      // إذا كان السطر فيه زرين، أو مجموع الحروف سيتجاوز 32 حرفاً
       if (currentRow.length >= 2 || (currentRowChars + textLen > 32)) {
         inline_keyboard.push(currentRow);
         currentRow = [btn];
         currentRowChars = textLen;
       } else {
-        // السطر يتسع بأريحية، أضف الزر بجوار أخيه
         currentRow.push(btn);
         currentRowChars += textLen;
       }
     }
   }
-  // إرسال السطر الأخير إن وجد
   if (currentRow.length > 0) inline_keyboard.push(currentRow);
   return inline_keyboard;
 }
@@ -450,7 +445,6 @@ async function handleCallbackQuery(callbackQuery) {
     qSnap.forEach(d => { if ((d.data().group || 'عام') === category) qList.push({ id: d.id, ...d.data() }); });
     if (qList.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
     
-    // تصغير نص الأزرار المعروضة للأسئلة المحددة
     let inline_keyboard = qList.map(q => ([{ text: q.question.length > 35 ? q.question.substring(0, 35) + '...' : q.question, callback_data: `send_q_${q.id}` }]));
     const mainCat = category.split('-')[0].trim();
     inline_keyboard.push([{ text: "🔙 رجوع للأقسام", callback_data: `smcat_${mainCat}` }]);
@@ -609,8 +603,11 @@ async function handleMessage(message) {
   const userRef = doc(db, "users", userId);
   const chatRef = doc(db, "users", chatId); 
   
-  if (isAdmin && text === '/link') {
-    if (message.chat.type === 'private') return sendTgMessage(chatId, "⚠️ هذا الأمر يستخدم داخل المجموعات (Groups) فقط لربطها بالبوت.", currentKeyboard);
+  // ✨ دالة الربط بالمجموعة ✨
+  if (isAdmin && (text === '/link' || text === '🔗 ربط بمجموعة')) {
+    if (message.chat.type === 'private') {
+      return sendTgMessage(chatId, "⚠️ **تنبيه:** لا يمكن ربط البوت من المحادثة الخاصة!\n\n💡 **طريقة الربط:**\n1. قم بإضافة البوت إلى مجموعتك.\n2. اذهب إلى المجموعة واكتب الأمر `/link` هناك.", currentKeyboard);
+    }
     await setDoc(doc(db, "bot_settings", "linked_group"), { id: chatId, name: message.chat.title || "مجموعة المسابقات" }, { merge: true });
     return sendTgMessage(chatId, "🔗 *تم ربط هذه المجموعة بنجاح!*\nسيتم إرسال أسئلة المسابقة إلى هنا عند طلب الإرسال من لوحة الإدارة.");
   }
@@ -630,7 +627,7 @@ async function handleMessage(message) {
   const chatSnap = await getDoc(chatRef);
 
   let currentState = userSnap.exists() ? userSnap.data().state : null;
-  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل'];
+  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل', '🔗 ربط بمجموعة'];
   if (knownCommands.includes(text) && currentState) {
     await setDoc(userRef, { state: null }, { merge: true });
     currentState = null; 
@@ -710,7 +707,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. الآن يتكيف حجم الأزرار بديناميكية مطلقة!');
+  if (req.method !== 'POST') return res.status(200).send('✅ تم التحديث بنجاح. تمت إضافة زر "🔗 ربط بمجموعة" لجميع المشرفين!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
