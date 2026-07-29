@@ -2,7 +2,7 @@
 // 1. المكتبات والإعدادات (Imports & Config)
 // ==========================================
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, collection, getDocs, doc, setDoc, getDoc, writeBatch, runTransaction } from 'firebase/firestore';
+import { initializeFirestore, collection, getDocs, doc, setDoc, getDoc, writeBatch, runTransaction, getDocFromServer } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 
 const firebaseConfig = {
@@ -34,19 +34,19 @@ const ADMIN_KEYBOARD = {
   keyboard: [
     [{ text: "🎮 سؤال جديد" }, { text: "🗂️ تغيير القسم" }],
     [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
-    [{ text: "👥 تقرير المتسابقين (إكسل)" }],
+    [{ text: "👥 تقرير المتسابقين" }, { text: "📢 إرسال للمجموعة" }],
     [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
     [{ text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
 
-// لوحة المالك (تحتوي على زر إدارة المشرفين السري)
 const OWNER_KEYBOARD = {
   keyboard: [
     [{ text: "🎮 سؤال جديد" }, { text: "🗂️ تغيير القسم" }],
     [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
-    [{ text: "👥 تقرير المتسابقين (إكسل)" }, { text: "⚙️ إدارة المشرفين" }],
+    [{ text: "👥 تقرير المتسابقين" }, { text: "⚙️ إدارة المشرفين" }],
+    [{ text: "📢 إرسال للمجموعة" }],
     [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
     [{ text: "🚀 ابدأ من جديد" }]
   ],
@@ -144,6 +144,26 @@ async function showCategories(chatId, isOwner, isAdmin) {
   return sendTgMessage(chatId, "📚 *اختر القسم الذي ترغب في اختباره:*", { inline_keyboard });
 }
 
+// دالة إرسال سؤال للمجموعة (عشوائي أو محدد)
+async function sendQuestionToGroup(groupId, questionDoc, category) {
+  const q = questionDoc.data();
+  const qId = questionDoc.id;
+  const timestamp = Date.now();
+  const isGold = Math.random() < 0.15 ? 1 : 0; 
+  
+  let rawButtons = [{ text: q.correct, callback_data: `c_${qId}_${timestamp}_${isGold}` }];
+  (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
+  rawButtons = shuffleArray(rawButtons);
+  let inline_keyboard = buildDynamicKeyboard(rawButtons, 20); 
+
+  let displayCat = cleanName(category);
+  let qText = `📁 *${displayCat}*\n\n`;
+  if (isGold === 1) qText += `🌟 *سؤال ذهبي! نقاط مضاعفة!* 🌟\n\n`;
+  qText += `❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
+  
+  await sendTgMessage(groupId, qText, { inline_keyboard });
+}
+
 async function askQuestion(chatId, category, messageIdToEdit = null, callbackId = null, isOwner, isAdmin) {
   const chatRef = doc(db, "users", chatId);
   const chatSnap = await getDoc(chatRef);
@@ -152,7 +172,7 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   const qSnap = await getDocs(collection(db, "questions"));
   let availableQ = [];
   qSnap.forEach(d => {
-    if ((d.data().group || 'عام') === category && !answered.includes(d.id)) availableQ.push({ id: d.id, ...d.data() });
+    if ((d.data().group || 'عام') === category && !answered.includes(d.id)) availableQ.push(d);
   });
 
   let displayCat = cleanName(category);
@@ -164,12 +184,14 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
     return sendTgMessage(chatId, endMsg, getKeyboard(isOwner, isAdmin));
   }
 
-  const q = availableQ[Math.floor(Math.random() * availableQ.length)];
+  const randomDoc = availableQ[Math.floor(Math.random() * availableQ.length)];
+  const q = randomDoc.data();
+  const qId = randomDoc.id;
   const timestamp = Date.now(); 
   const isGold = Math.random() < 0.15 ? 1 : 0; 
   
-  let rawButtons = [{ text: q.correct, callback_data: `c_${q.id}_${timestamp}_${isGold}` }];
-  (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${q.id}_${idx}_${timestamp}_${isGold}` }) });
+  let rawButtons = [{ text: q.correct, callback_data: `c_${qId}_${timestamp}_${isGold}` }];
+  (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
   rawButtons = shuffleArray(rawButtons);
   let inline_keyboard = buildDynamicKeyboard(rawButtons, 20); 
 
@@ -256,7 +278,6 @@ async function handleCallbackQuery(callbackQuery) {
   const userName = from.first_name || "مجهول";
   const originalKeyboard = message.reply_markup?.inline_keyboard || [];
 
-  // ✨ جلب قائمة المشرفين للتحقق ✨
   const adminDocRef = doc(db, "bot_settings", "admins");
   const adminDocSnap = await getDoc(adminDocRef);
   let adminsArray = adminDocSnap.exists() ? (adminDocSnap.data().list || []) : [];
@@ -265,7 +286,81 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (data === "ignore") return answerTgCallback(callbackId, "⚠️ لا يمكنك الضغط هنا مجدداً.");
 
-  // ✨ أوامر المالك: إضافة أو إزالة مشرف ✨
+  // ✨ معالجة اختيار وضع الإرسال (عشوائي أو محدد) ✨
+  if (data === "bc_mode_rand" || data === "bc_mode_spec") {
+    if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
+    const isRandom = (data === "bc_mode_rand");
+    
+    const qSnap = await getDocs(collection(db, "questions"));
+    let groupsArray = Array.from(new Set(qSnap.docs.map(d => d.data().group || 'عام')));
+    
+    let prefix = isRandom ? "rand_cat_" : "spec_cat_";
+    let catButtons = groupsArray.map(g => ({ text: `📁 ${cleanName(g)}`, callback_data: `${prefix}${g}` }));
+    let inline_keyboard = buildDynamicKeyboard(catButtons, 18);
+
+    const title = isRandom ? "🎲 اختر قسم لإرسال (سؤال عشوائي):" : "🎯 اختر قسم لعرض أسئلته واختيار (سؤال محدد):";
+    return editTgMessage(chatId, messageId, title, { inline_keyboard });
+  }
+
+  // ✨ إرسال سؤال عشوائي للمجموعة ✨
+  if (data.startsWith("rand_cat_")) {
+    if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
+    const category = data.replace("rand_cat_", "");
+    
+    const groupSnap = await getDoc(doc(db, "bot_settings", "linked_group"));
+    if (!groupSnap.exists()) return answerTgCallback(callbackId, "⚠️ لم تقم بربط أي مجموعة بعد. استخدم أمر /link داخل المجموعة.");
+    
+    const groupId = groupSnap.data().id;
+    const qSnap = await getDocs(collection(db, "questions"));
+    let matchingQ = [];
+    qSnap.forEach(d => { if ((d.data().group || 'عام') === category) matchingQ.push(d); });
+
+    if (matchingQ.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
+    const randomDoc = matchingQ[Math.floor(Math.random() * matchingQ.length)];
+
+    await sendQuestionToGroup(groupId, randomDoc, category);
+    await answerTgCallback(callbackId, "✅ تم إرسال السؤال عشوائياً للمجموعة!");
+    return editTgMessage(chatId, messageId, `✅ تم إرسال سؤال عشوائي من قسم *${cleanName(category)}* إلى المجموعة بنجاح! 🚀`);
+  }
+
+  // ✨ عرض قائمة الأسئلة المحددة لاختيار واحد منها ✨
+  if (data.startsWith("spec_cat_")) {
+    if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
+    const category = data.replace("spec_cat_", "");
+
+    const qSnap = await getDocs(collection(db, "questions"));
+    let qList = [];
+    qSnap.forEach(d => { if ((d.data().group || 'عام') === category) qList.push({ id: d.id, ...d.data() }); });
+
+    if (qList.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
+
+    // بناء قائمة أزرار بالأسئلة (اقتصاص النص الطويل ليناسب الزر)
+    let inline_keyboard = qList.map(q => ([{
+      text: q.question.length > 35 ? q.question.substring(0, 35) + '...' : q.question,
+      callback_data: `send_q_${q.id}`
+    }]));
+
+    return editTgMessage(chatId, messageId, `🎯 *اختر السؤال المطلوب إرساله من قسم (${cleanName(category)}):*`, { inline_keyboard });
+  }
+
+  // ✨ إرسال السؤال المحدد بالذات إلى المجموعة ✨
+  if (data.startsWith("send_q_")) {
+    if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
+    const qId = data.replace("send_q_", "");
+
+    const groupSnap = await getDoc(doc(db, "bot_settings", "linked_group"));
+    if (!groupSnap.exists()) return answerTgCallback(callbackId, "⚠️ لم تقم بربط أي مجموعة بعد.");
+    const groupId = groupSnap.data().id;
+
+    const qDocRef = doc(db, "questions", qId);
+    const qDocSnap = await getDoc(qDocRef);
+    if (!qDocSnap.exists()) return answerTgCallback(callbackId, "⚠️ السؤال غير موجود.");
+
+    await sendQuestionToGroup(groupId, qDocSnap, qDocSnap.data().group || 'عام');
+    await answerTgCallback(callbackId, "✅ تم إرسال السؤال المحدد للمجموعة!");
+    return editTgMessage(chatId, messageId, `✅ تم إرسال السؤال المختار بنجاح إلى المجموعة! 🎯`);
+  }
+
   if (isOwner) {
     if (data === "add_admin") {
       await setDoc(doc(db, "users", userId), { state: "WAITING_FOR_ADMIN_ADD" }, { merge: true });
@@ -390,7 +485,6 @@ async function handleMessage(message) {
   const document = message.document;
   const userName = message.from ? (message.from.first_name || "مجهول") : "مجهول";
   
-  // ✨ جلب قائمة المشرفين وتحديد الصلاحيات ✨
   const adminDocRef = doc(db, "bot_settings", "admins");
   const adminDocSnap = await getDoc(adminDocRef);
   let adminsArray = adminDocSnap.exists() ? (adminDocSnap.data().list || []) : [];
@@ -402,12 +496,20 @@ async function handleMessage(message) {
   const userRef = doc(db, "users", userId);
   const chatRef = doc(db, "users", chatId); 
   
+  if (isAdmin && text === '/link') {
+    if (message.chat.type === 'private') {
+      return sendTgMessage(chatId, "⚠️ هذا الأمر يستخدم داخل المجموعات (Groups) فقط لربطها بالبوت.", currentKeyboard);
+    }
+    await setDoc(doc(db, "bot_settings", "linked_group"), { id: chatId, name: message.chat.title || "مجموعة المسابقات" }, { merge: true });
+    return sendTgMessage(chatId, "🔗 *تم ربط هذه المجموعة بنجاح!*\nسيتم إرسال أسئلة المسابقة إلى هنا عند طلب الإرسال من لوحة الإدارة.");
+  }
+
   if (message.new_chat_members) {
     for (let member of message.new_chat_members) {
       if (member.is_bot && member.username === message.chat.username) {
-        await sendTgMessage(chatId, `مرحباً بالجميع! 🌟\nأنا بوت المسابقات الذكي. أرسلوا /quiz لنبدأ!`);
+        await sendTgMessage(chatId, `مرحباً بالجميع! 🌟\nأنا بوت المسابقات. يمكن للمشرفين الآن ربط المجموعة بإرسال أمر /link`);
       } else if (!member.is_bot) {
-        await sendTgMessage(chatId, `أهلاً بك يا [${member.first_name}](tg://user?id=${member.id}) في المجموعة! 🥳\nهل أنت مستعد لاختبار معلوماتك؟ أرسل /quiz للبدء!`);
+        await sendTgMessage(chatId, `أهلاً بك يا [${member.first_name}](tg://user?id=${member.id}) في المجموعة! 🥳\nهل أنت مستعد لاختبار معلوماتك؟`);
       }
     }
     return;
@@ -416,12 +518,9 @@ async function handleMessage(message) {
   const userSnap = await getDoc(userRef);
   const chatSnap = await getDoc(chatRef);
 
-  // ✨ استقبال الآيدي الخاص بالمشرف الجديد من المالك ✨
   if (isOwner && userSnap.exists() && userSnap.data().state === "WAITING_FOR_ADMIN_ADD") {
     const newAdminId = text.trim();
-    if (!/^\d+$/.test(newAdminId)) { // التحقق من أن النص أرقام فقط
-      return sendTgMessage(chatId, "⚠️ يرجى إرسال أرقام الآيدي (ID) بشكل صحيح فقط.", currentKeyboard);
-    }
+    if (!/^\d+$/.test(newAdminId)) return sendTgMessage(chatId, "⚠️ يرجى إرسال أرقام الآيدي (ID) فقط.", currentKeyboard);
     if (!adminsArray.includes(newAdminId)) {
        adminsArray.push(newAdminId);
        await setDoc(adminDocRef, { list: adminsArray }, { merge: true });
@@ -430,7 +529,21 @@ async function handleMessage(message) {
     return sendTgMessage(chatId, `✅ تم تعيين المستخدم (${newAdminId}) كمشرف بنجاح!`, currentKeyboard);
   }
 
-  // ✨ فتح لوحة إدارة المشرفين السريّة للمالك ✨
+  // ✨ عند ضغط المدير على زر "إرسال للمجموعة"، يعطيه الخيار (عشوائي أو محدد) ✨
+  if (isAdmin && text === '📢 إرسال للمجموعة') {
+    const groupSnap = await getDoc(doc(db, "bot_settings", "linked_group"));
+    if (!groupSnap.exists()) {
+      return sendTgMessage(chatId, "⚠️ **لم تقم بـ ربط أي مجموعة بعد!**\n\nقم بإضافة البوت إلى مجموعتك، ثم أرسل الأمر `/link` داخل المجموعة لربطها.", currentKeyboard);
+    }
+    
+    const inline_keyboard = [
+      [{ text: "🎲 إرسال سؤال عشوائي", callback_data: "bc_mode_rand" }],
+      [{ text: "🎯 اختيار سؤال محدد بالذات", callback_data: "bc_mode_spec" }]
+    ];
+
+    return sendTgMessage(chatId, `📢 *لوحة إرسال الأسئلة إلى (${groupSnap.data().name}):*\n\nكيف ترغب في اختيار السؤال؟`, { inline_keyboard });
+  }
+
   if (isOwner && text === '⚙️ إدارة المشرفين') {
     const inline_keyboard = [
       [{ text: "➕ إضافة مشرف", callback_data: "add_admin" }, { text: "📋 قائمة المشرفين", callback_data: "list_admins" }],
@@ -494,7 +607,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت الخارق يعمل مع نظام إدارة الصلاحيات والمشرفين!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة مع نظام اختيار (السؤال العشوائي أو المحدد)!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
