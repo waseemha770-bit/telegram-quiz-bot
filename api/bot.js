@@ -1,9 +1,7 @@
 import { initializeApp } from 'firebase/app';
-// السحر هنا: استخدمنا نسخة lite المخصصة لـ Vercel والتي لا تنقطع أبداً
 import { getFirestore, collection, getDocs, doc, setDoc, getDoc, writeBatch } from 'firebase/firestore/lite';
 import * as XLSX from 'xlsx';
 
-// إعداد الاتصال بـ Firebase
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY,
   projectId: process.env.FIREBASE_PROJECT_ID,
@@ -12,7 +10,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// دالة خلط الأسئلة
+const TIME_LIMIT_SECONDS = 20; // ⏱️ يمكنك تغيير وقت السؤال من هنا
+
 function shuffleArray(array) {
   const arr = [...array];
   for (let i = arr.length - 1; i > 0; i--) {
@@ -24,17 +23,28 @@ function shuffleArray(array) {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(200).send('✅ البوت يعمل بنجاح ومربوط بـ Firebase Lite!');
+    return res.status(200).send('✅ البوت يعمل بنجاح مع التحديثات الجديدة (المؤقت، التصفير، تقارير الإدارة)!');
   }
 
   const token = process.env.TELEGRAM_TOKEN;
   const adminId = process.env.ADMIN_ID;
   const body = req.body;
 
-  const replyKeyboard = {
+  // 1️⃣ قائمة أزرار المتسابق العادي
+  const userKeyboard = {
+    keyboard: [
+      [{ text: "🚀 ابدأ من جديد" }, { text: "🎮 سؤال جديد" }],
+      [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }]
+    ],
+    resize_keyboard: true
+  };
+
+  // 2️⃣ قائمة أزرار الإدارة (لك أنت فقط)
+  const adminKeyboard = {
     keyboard: [
       [{ text: "🚀 ابدأ من جديد" }, { text: "🎮 سؤال جديد" }],
       [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
+      [{ text: "👥 تقرير المتسابقين (إكسل)" }],
       [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }]
     ],
     resize_keyboard: true
@@ -68,7 +78,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // معالجة الأزرار الشفافة (الإجابات)
     if (body.callback_query) {
       const callbackQuery = body.callback_query;
       const callbackId = callbackQuery.id;
@@ -79,7 +88,7 @@ export default async function handler(req, res) {
       const originalKeyboard = callbackQuery.message.reply_markup ? callbackQuery.message.reply_markup.inline_keyboard : [];
 
       if (data === "ignore") {
-        await answerCallback(callbackId, "⚠️ لقد قمت بالإجابة على هذا السؤال مسبقاً!");
+        await answerCallback(callbackId, "⚠️ لا يمكنك الضغط هنا مجدداً.");
         return res.status(200).json({ success: true });
       }
 
@@ -92,8 +101,27 @@ export default async function handler(req, res) {
         const userSnap = await getDoc(userRef);
         let userData = userSnap.exists() ? userSnap.data() : { score: 0, answered: [], name: userName };
 
+        // ⏱️ التحقق من المؤقت
+        const now = Date.now();
+        const lastQTime = userData.last_q_time || 0;
+        const timeDiffSeconds = (now - lastQTime) / 1000;
+
+        if (timeDiffSeconds > TIME_LIMIT_SECONDS && lastQTime !== 0) {
+           await answerCallback(callbackId, `⏳ انتهى الوقت! (الحد الأقصى للإجابة ${TIME_LIMIT_SECONDS} ثانية)`);
+           
+           const timeoutKeyboard = originalKeyboard.map(row => {
+             return row.map(btn => ({ text: "⏳ " + btn.text, callback_data: "ignore" }));
+           });
+           
+           await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
+             method: 'POST', headers: { 'Content-Type': 'application/json' },
+             body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: timeoutKeyboard } })
+           });
+           return res.status(200).json({ success: true });
+        }
+
         if (userData.answered && userData.answered.includes(qId)) {
-          await answerCallback(callbackId, "⚠️ لقد تم تسجيل إجابتك على هذا السؤال مسبقاً.");
+          await answerCallback(callbackId, "⚠️ لقد تم تسجيل إجابتك مسبقاً.");
           return res.status(200).json({ success: true });
         }
 
@@ -120,35 +148,43 @@ export default async function handler(req, res) {
         });
 
         await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: newKeyboard } })
         });
         return res.status(200).json({ success: true });
       }
     }
 
-    // معالجة الرسائل النصية والملفات
     if (body.message) {
       const chatId = body.message.chat.id.toString();
       const text = body.message.text || "";
       const document = body.message.document;
       const userName = body.message.from.first_name || "مجهول";
+      
+      const currentKeyboard = (chatId === adminId) ? adminKeyboard : userKeyboard;
 
       const userRef = doc(db, "users", chatId);
       const userSnap = await getDoc(userRef);
       let userData = userSnap.exists() ? userSnap.data() : {};
       let currentState = userData.state || null;
 
-      // استقبال ملف الإكسل
+      // 🔄 تصفير النقاط والبدء من جديد
+      if (text === '/start' || text === '🚀 ابدأ من جديد') {
+        const resetData = { score: 0, answered: [], state: null, name: userName, last_q_time: 0 };
+        await setDoc(userRef, resetData);
+        await sendMessage(chatId, `أهلاً بك يا *${userName}*! 🚀\nتم تصفير نقاطك بنجاح، أنت الآن جاهز لبداية جديدة.\n\nاضغط على (سؤال جديد) للبدء:`, currentKeyboard);
+        return res.status(200).json({ success: true });
+      }
+
+      // 📥 استيراد إكسل
       if (document && chatId === adminId && currentState === "WAITING_FOR_EXCEL") {
         const fileName = document.file_name;
         if (!fileName.endsWith('.xlsx')) {
-          await sendMessage(chatId, "❌ يرجى إرسال ملف بصيغة `.xlsx` فقط.", replyKeyboard);
+          await sendMessage(chatId, "❌ يرجى إرسال ملف بصيغة `.xlsx` فقط.", currentKeyboard);
           return res.status(200).json({ success: true });
         }
 
-        await sendMessage(chatId, "🔄 جاري معالجة البيانات ورفعها إلى Firebase...");
+        await sendMessage(chatId, "🔄 جاري معالجة البيانات...");
         const fileId = document.file_id;
         const fileRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
         const fileJson = await fileRes.json();
@@ -202,22 +238,22 @@ export default async function handler(req, res) {
             uSnap.forEach(u => uBatch.update(u.ref, { answered: [] }));
             if(uSnap.size > 0) await uBatch.commit();
 
-            await sendMessage(chatId, `🎉 *تم تحديث بنك أسئلة Firebase بنجاح!*\nتم إدراج: ${bulkQuestions.length} سؤال.`, replyKeyboard);
+            await sendMessage(chatId, `🎉 *تم تحديث بنك أسئلة Firebase بنجاح!*\nتم إدراج: ${bulkQuestions.length} سؤال.`, currentKeyboard);
           }
         }
         await setDoc(userRef, { state: null }, { merge: true });
         return res.status(200).json({ success: true });
       }
 
+      // 📤 تصدير الأسئلة
       if ((text === '📤 تصدير إكسل' || text === '/export') && chatId === adminId) {
          const qSnap = await getDocs(collection(db, "questions"));
          if (qSnap.empty) {
-            await sendMessage(chatId, "لا توجد أسئلة للتصدير.", replyKeyboard);
+            await sendMessage(chatId, "لا توجد أسئلة للتصدير.", currentKeyboard);
             return res.status(200).json({ success: true });
          }
          let allQuestions = [];
          qSnap.forEach(d => allQuestions.push(d.data()));
-
          let maxWrong = 0;
          allQuestions.forEach(q => { if (q.wrong && q.wrong.length > maxWrong) maxWrong = q.wrong.length; });
 
@@ -238,21 +274,42 @@ export default async function handler(req, res) {
          XLSX.utils.book_append_sheet(wb, ws, "Questions");
          const excelBuffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
 
-         await sendDocument(chatId, excelBuffer, 'firebase_questions.xlsx', '📁 بنك الأسئلة من Firebase');
+         await sendDocument(chatId, excelBuffer, 'firebase_questions.xlsx', '📁 بنك الأسئلة الحالي');
          return res.status(200).json({ success: true });
       }
 
+      // 👥 تقرير المتسابقين الشامل (إكسل) للمدير
+      if (text === '👥 تقرير المتسابقين (إكسل)' && chatId === adminId) {
+         const uSnap = await getDocs(collection(db, "users"));
+         let allUsers = [];
+         uSnap.forEach(d => allUsers.push(d.data()));
+         
+         // ترتيب المتسابقين من الأعلى للأقل
+         allUsers.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+         const excelData = [['المركز', 'اسم المتسابق', 'إجمالي النقاط', 'الأسئلة المجاب عليها']];
+         allUsers.forEach((u, i) => {
+           excelData.push([i + 1, u.name || 'مجهول', u.score || 0, (u.answered || []).length]);
+         });
+
+         const ws = XLSX.utils.aoa_to_sheet(excelData);
+         const wb = XLSX.utils.book_new();
+         XLSX.utils.book_append_sheet(wb, ws, "Contestants");
+         const excelBuffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+         await sendDocument(chatId, excelBuffer, 'contestants_report.xlsx', '📊 التقرير الشامل لنتائج جميع المتسابقين');
+         return res.status(200).json({ success: true });
+      }
+
+      // 📥 تفعيل وضع الاستيراد
       if ((text === '📥 استيراد إكسل' || text === '/import') && chatId === adminId) {
         await setDoc(userRef, { state: "WAITING_FOR_EXCEL" }, { merge: true });
-        await sendMessage(chatId, "📥 **أرسل الآن ملف الإكسل (.xlsx)**.", replyKeyboard);
+        await sendMessage(chatId, "📥 **أرسل الآن ملف الإكسل (.xlsx)**.", currentKeyboard);
         return res.status(200).json({ success: true });
       }
 
-      if (text === '/start' || text === '🚀 ابدأ من جديد') {
-        await setDoc(userRef, { state: null }, { merge: true });
-        await sendMessage(chatId, `أهلاً بك يا *${userName}* في نسخة البوت الجديدة! 🚀\nاضغط على (سؤال جديد) للبدء:`, replyKeyboard);
-      }
-      else if (text === '/quiz' || text === '🎮 سؤال جديد') {
+      // 🎮 طلب سؤال جديد
+      if (text === '/quiz' || text === '🎮 سؤال جديد') {
         const qSnap = await getDocs(collection(db, "questions"));
         let allQuestions = [];
         qSnap.forEach(d => { allQuestions.push({ id: d.id, ...d.data() }); });
@@ -261,7 +318,7 @@ export default async function handler(req, res) {
         const availableQ = allQuestions.filter(q => !answered.includes(q.id));
 
         if (availableQ.length === 0) {
-          await sendMessage(chatId, "🎉 *تهانينا!* لقد أجبت على جميع الأسئلة المتاحة.", replyKeyboard);
+          await sendMessage(chatId, "🎉 *تهانينا!* لقد أجبت على جميع الأسئلة المتاحة.", currentKeyboard);
           return res.status(200).json({ success: true });
         }
 
@@ -276,11 +333,18 @@ export default async function handler(req, res) {
         let inline_keyboard = [];
         for (let i = 0; i < buttons.length; i += 2) inline_keyboard.push(buttons.slice(i, i + 2));
 
-        await sendMessage(chatId, `❓ *${q.question}*`, { inline_keyboard });
+        // ⏱️ تسجيل لحظة استلام السؤال في قاعدة البيانات للبدء في حساب المؤقت
+        await setDoc(userRef, { last_q_time: Date.now() }, { merge: true });
+
+        await sendMessage(chatId, `❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`, { inline_keyboard });
       }
+
+      // 📊 الرصيد الشخصي
       else if (text === '/score' || text === '📊 رصيدي الحالي') {
-        await sendMessage(chatId, `🏆 رصيدك الحالي هو: *${userData.score || 0} نقطة*`, replyKeyboard);
+        await sendMessage(chatId, `🏆 رصيدك الحالي هو: *${userData.score || 0} نقطة*`, currentKeyboard);
       }
+
+      // 🏆 لوحة الشرف
       else if (text === '/top' || text === '🏆 لوحة الشرف') {
         const uSnap = await getDocs(collection(db, "users"));
         let topUsers = [];
@@ -291,11 +355,11 @@ export default async function handler(req, res) {
         topUsers = topUsers.slice(0, 10);
 
         if (topUsers.length === 0) {
-          await sendMessage(chatId, "لا توجد نقاط مسجلة حتى الآن.", replyKeyboard);
+          await sendMessage(chatId, "لا توجد نقاط مسجلة حتى الآن.", currentKeyboard);
         } else {
-          let topText = "🏆 *لوحة الشرف:*\n\n";
-          topUsers.forEach((u, i) => { topText += `${i + 1}. ${u.name || 'مجهول'} - ${u.score}\n`; });
-          await sendMessage(chatId, topText, replyKeyboard);
+          let topText = "🏆 *لوحة الشرف (أفضل 10 متسابقين):*\n\n";
+          topUsers.forEach((u, i) => { topText += `${i + 1}. ${u.name || 'مجهول'} - ${u.score} نقطة\n`; });
+          await sendMessage(chatId, topText, currentKeyboard);
         }
       }
     }
