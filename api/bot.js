@@ -60,12 +60,42 @@ function cleanName(name) {
   return name.replace(/المجموعة/g, '').replace(/قسم/g, '').replace(/الأولى/g, '').trim();
 }
 
-// ✨ نظام الألقاب والمستويات
 function getRank(score) {
   if (score < 50) return "مبتدئ 🌱";
   if (score < 150) return "متسابق نشط ⚡";
   if (score < 300) return "محترف 🏅";
   return "أسطورة المعرفة 🔥";
+}
+
+// ✨ الدالة السحرية: تصميم ديناميكي للأزرار بناءً على طول النص
+function buildDynamicKeyboard(buttonsArray, maxLength = 20) {
+  let inline_keyboard = [];
+  let currentRow = [];
+
+  for (let btn of buttonsArray) {
+    if (btn.text.length > maxLength) {
+      // إذا كان النص طويلاً، ندفع الأزرار السابقة (إن وجدت) ثم نضع هذا الزر في سطر لوحده
+      if (currentRow.length > 0) {
+        inline_keyboard.push(currentRow);
+        currentRow = [];
+      }
+      inline_keyboard.push([btn]);
+    } else {
+      // إذا كان النص قصيراً، نضعه في السطر الحالي
+      currentRow.push(btn);
+      // إذا اكتمل السطر (زرين)، نرسله ونفتح سطراً جديداً
+      if (currentRow.length === 2) {
+        inline_keyboard.push(currentRow);
+        currentRow = [];
+      }
+    }
+  }
+  // إذا تبقى زر فردي في السطر الأخير، نرسله
+  if (currentRow.length > 0) {
+    inline_keyboard.push(currentRow);
+  }
+
+  return inline_keyboard;
 }
 
 async function sendTgMessage(chatId, text, replyMarkup = null) {
@@ -106,13 +136,14 @@ async function showCategories(chatId, userId) {
   
   if (groupsArray.length === 0) return sendTgMessage(chatId, "لا توجد أسئلة متاحة حالياً.", getKeyboard(userId));
 
-  let inline_keyboard = [];
-  for (let i = 0; i < groupsArray.length; i += 2) {
-    let displayName1 = cleanName(groupsArray[i]);
-    let row = [{ text: `📁 ${displayName1}`, callback_data: `cat_${groupsArray[i]}` }];
-    if (groupsArray[i+1]) row.push({ text: `📁 ${cleanName(groupsArray[i+1])}`, callback_data: `cat_${groupsArray[i+1]}` });
-    inline_keyboard.push(row);
-  }
+  // تحويل الأقسام إلى مصفوفة أزرار ثم تمريرها للدالة الديناميكية
+  let catButtons = groupsArray.map(g => ({
+      text: `📁 ${cleanName(g)}`,
+      callback_data: `cat_${g}`
+  }));
+
+  let inline_keyboard = buildDynamicKeyboard(catButtons, 18); // حد أقصى 18 حرف للزر القصير
+
   return sendTgMessage(chatId, "📚 *اختر القسم الذي ترغب في اختباره:*", { inline_keyboard });
 }
 
@@ -138,16 +169,17 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
 
   const q = availableQ[Math.floor(Math.random() * availableQ.length)];
   
-  // ✨ تضمين الوقت وحالة السؤال الذهبي بداخل الأزرار (Stateless)
   const timestamp = Math.floor(Date.now() / 1000);
-  const isGold = Math.random() < 0.15 ? 1 : 0; // 15% فرصة للسؤال الذهبي
+  const isGold = Math.random() < 0.15 ? 1 : 0; 
   
-  let buttons = [{ text: q.correct, callback_data: `c_${q.id}_${timestamp}_${isGold}` }];
-  (q.wrong || []).forEach((w, idx) => { if(w) buttons.push({ text: w, callback_data: `w_${q.id}_${idx}_${timestamp}_${isGold}` }) });
-  buttons = shuffleArray(buttons);
+  let rawButtons = [{ text: q.correct, callback_data: `c_${q.id}_${timestamp}_${isGold}` }];
+  (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${q.id}_${idx}_${timestamp}_${isGold}` }) });
   
-  let inline_keyboard = [];
-  for (let i = 0; i < buttons.length; i += 2) inline_keyboard.push(buttons.slice(i, i + 2));
+  // خلط الأزرار عشوائياً
+  rawButtons = shuffleArray(rawButtons);
+  
+  // بناء لوحة الأزرار بشكل ديناميكي (النص الطويل سطر كامل، القصير زرين)
+  let inline_keyboard = buildDynamicKeyboard(rawButtons, 20); // 20 حرف كحد للزر
 
   await setDoc(chatRef, { active_category: category }, { merge: true });
   
@@ -193,13 +225,41 @@ async function processExcelImport(document, chatId, userId) {
   }
 }
 
+async function exportQuestions(chatId) {
+  const qSnap = await getDocs(collection(db, "questions"));
+  if (qSnap.empty) return sendTgMessage(chatId, "لا توجد أسئلة للتصدير.", getKeyboard(chatId));
+
+  let allQs = []; qSnap.forEach(d => allQs.push(d.data()));
+  let maxWrong = Math.max(...allQs.map(q => q.wrong?.length || 0));
+
+  let exportHeaders = ['السؤال', 'الإجابة الصحيحة', ...Array.from({length: maxWrong}, (_, i) => `خطأ ${i+1}`), 'المجموعة'];
+  const excelData = [exportHeaders, ...allQs.map(q => [q.question, q.correct, ...Array.from({length: maxWrong}, (_, i) => q.wrong[i] || ''), q.group || 'عام'])];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(excelData), "Questions");
+  await sendTgDocument(chatId, XLSX.write(wb, { type: "buffer", bookType: "xlsx" }), 'firebase_questions.xlsx', '📁 بنك الأسئلة الحالي');
+}
+
+async function exportUsersReport(chatId) {
+  const uSnap = await getDocs(collection(db, "users"));
+  let allUsers = []; uSnap.forEach(d => allUsers.push(d.data()));
+  allUsers.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  const excelData = [['المركز', 'اسم المتسابق', 'إجمالي النقاط', 'الأسئلة المجاب عليها']];
+  allUsers.forEach((u, i) => excelData.push([i + 1, u.name || 'مجهول', u.score || 0, (u.answered || []).length]));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(excelData), "Contestants");
+  await sendTgDocument(chatId, XLSX.write(wb, { type: "buffer", bookType: "xlsx" }), 'contestants_report.xlsx', '📊 تقرير المتسابقين');
+}
+
 // ==========================================
 // 6. معالجة الأزرار الشفافة (Callback Query)
 // ==========================================
 async function handleCallbackQuery(callbackQuery) {
   const { id: callbackId, data, message, from } = callbackQuery;
   const chatId = message.chat.id.toString();
-  const userId = from.id.toString(); // ✨ عزل المستخدم عن المجموعة
+  const userId = from.id.toString(); 
   const messageId = message.message_id;
   const userName = from.first_name || "مجهول";
   const originalKeyboard = message.reply_markup?.inline_keyboard || [];
@@ -353,7 +413,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت الخارق يعمل! (الألقاب، السرعة، السلسلة، الذهب، والمجموعات)');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بواجهة استجابة ديناميكية مذهلة!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
