@@ -41,7 +41,7 @@ const ADMIN_KEYBOARD = {
   resize_keyboard: true
 };
 
-const getKeyboard = (chatId) => (chatId === getAdminId()) ? ADMIN_KEYBOARD : USER_KEYBOARD;
+const getKeyboard = (userId) => (userId === getAdminId()) ? ADMIN_KEYBOARD : USER_KEYBOARD;
 
 // ==========================================
 // 3. دوال مساعدة (Helper Functions)
@@ -55,23 +55,23 @@ function shuffleArray(array) {
   return arr;
 }
 
-// ✨ فلتر ذكي يمسح كل شيء قبل النقطتين الرأسيتين ":"
 function cleanName(name) {
-  // إذا كان الاسم يحتوي على ":"، نأخذ ما بعدها فقط
-  if (name.includes(':')) {
-    return name.split(':').pop().trim();
-  }
-  // احتياطاً في حال كان هناك أسماء بدون ":"
+  if (name.includes(':')) return name.split(':').pop().trim();
   return name.replace(/المجموعة/g, '').replace(/قسم/g, '').replace(/الأولى/g, '').trim();
+}
+
+// ✨ نظام الألقاب والمستويات
+function getRank(score) {
+  if (score < 50) return "مبتدئ 🌱";
+  if (score < 150) return "متسابق نشط ⚡";
+  if (score < 300) return "محترف 🏅";
+  return "أسطورة المعرفة 🔥";
 }
 
 async function sendTgMessage(chatId, text, replyMarkup = null) {
   const payload = { chat_id: chatId, text: text, parse_mode: "Markdown" };
   if (replyMarkup) payload.reply_markup = replyMarkup;
-  await fetch(`https://api.telegram.org/bot${getToken()}/sendMessage`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  await fetch(`https://api.telegram.org/bot${getToken()}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
 }
 
 async function sendTgDocument(chatId, fileBuffer, fileName, caption) {
@@ -79,9 +79,7 @@ async function sendTgDocument(chatId, fileBuffer, fileName, caption) {
   formData.append('chat_id', chatId);
   formData.append('document', new Blob([fileBuffer]), fileName);
   formData.append('caption', caption);
-  await fetch(`https://api.telegram.org/bot${getToken()}/sendDocument`, {
-    method: 'POST', body: formData
-  });
+  await fetch(`https://api.telegram.org/bot${getToken()}/sendDocument`, { method: 'POST', body: formData });
 }
 
 async function answerTgCallback(callbackId, text) {
@@ -96,46 +94,37 @@ async function editTgMessage(chatId, messageId, text = null, replyMarkup = null)
   if (text) payload.text = text; payload.parse_mode = "Markdown";
   if (replyMarkup) payload.reply_markup = replyMarkup;
   const endpoint = text ? 'editMessageText' : 'editMessageReplyMarkup';
-  await fetch(`https://api.telegram.org/bot${getToken()}/${endpoint}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  await fetch(`https://api.telegram.org/bot${getToken()}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
 }
 
 // ==========================================
 // 4. دوال نظام الأسئلة والأقسام (Quiz Engine)
 // ==========================================
-async function showCategories(chatId) {
+async function showCategories(chatId, userId) {
   const qSnap = await getDocs(collection(db, "questions"));
   let groupsArray = Array.from(new Set(qSnap.docs.map(d => d.data().group || 'عام')));
   
-  if (groupsArray.length === 0) return sendTgMessage(chatId, "لا توجد أسئلة متاحة حالياً.", getKeyboard(chatId));
+  if (groupsArray.length === 0) return sendTgMessage(chatId, "لا توجد أسئلة متاحة حالياً.", getKeyboard(userId));
 
   let inline_keyboard = [];
   for (let i = 0; i < groupsArray.length; i += 2) {
     let displayName1 = cleanName(groupsArray[i]);
     let row = [{ text: `📁 ${displayName1}`, callback_data: `cat_${groupsArray[i]}` }];
-    
-    if (groupsArray[i+1]) {
-      let displayName2 = cleanName(groupsArray[i+1]);
-      row.push({ text: `📁 ${displayName2}`, callback_data: `cat_${groupsArray[i+1]}` });
-    }
+    if (groupsArray[i+1]) row.push({ text: `📁 ${cleanName(groupsArray[i+1])}`, callback_data: `cat_${groupsArray[i+1]}` });
     inline_keyboard.push(row);
   }
   return sendTgMessage(chatId, "📚 *اختر القسم الذي ترغب في اختباره:*", { inline_keyboard });
 }
 
-async function askQuestion(chatId, category, messageIdToEdit = null, callbackId = null) {
-  const userRef = doc(db, "users", chatId);
-  const userSnap = await getDoc(userRef);
-  let uData = userSnap.exists() ? userSnap.data() : { answered: [] };
-  const answered = uData.answered || [];
+async function askQuestion(chatId, category, messageIdToEdit = null, callbackId = null, userId = null) {
+  const chatRef = doc(db, "users", chatId);
+  const chatSnap = await getDoc(chatRef);
+  const answered = chatSnap.exists() ? (chatSnap.data().answered || []) : [];
 
   const qSnap = await getDocs(collection(db, "questions"));
   let availableQ = [];
   qSnap.forEach(d => {
-    const q = d.data();
-    if ((q.group || 'عام') === category && !answered.includes(d.id)) availableQ.push({ id: d.id, ...q });
+    if ((d.data().group || 'عام') === category && !answered.includes(d.id)) availableQ.push({ id: d.id, ...d.data() });
   });
 
   let displayCat = cleanName(category);
@@ -144,108 +133,64 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
     const endMsg = `🎉 لقد أتممت جميع أسئلة: *${displayCat}*`;
     if (callbackId) await answerTgCallback(callbackId, `🎉 أتممت أسئلة: ${displayCat}`);
     if (messageIdToEdit) return editTgMessage(chatId, messageIdToEdit, endMsg);
-    return sendTgMessage(chatId, endMsg, getKeyboard(chatId));
+    return sendTgMessage(chatId, endMsg, getKeyboard(userId));
   }
 
   const q = availableQ[Math.floor(Math.random() * availableQ.length)];
-  let buttons = [{ text: q.correct, callback_data: "c_" + q.id }];
-  (q.wrong || []).forEach((w, idx) => { if(w) buttons.push({ text: w, callback_data: "w_" + q.id + "_" + idx }) });
+  
+  // ✨ تضمين الوقت وحالة السؤال الذهبي بداخل الأزرار (Stateless)
+  const timestamp = Math.floor(Date.now() / 1000);
+  const isGold = Math.random() < 0.15 ? 1 : 0; // 15% فرصة للسؤال الذهبي
+  
+  let buttons = [{ text: q.correct, callback_data: `c_${q.id}_${timestamp}_${isGold}` }];
+  (q.wrong || []).forEach((w, idx) => { if(w) buttons.push({ text: w, callback_data: `w_${q.id}_${idx}_${timestamp}_${isGold}` }) });
   buttons = shuffleArray(buttons);
   
   let inline_keyboard = [];
   for (let i = 0; i < buttons.length; i += 2) inline_keyboard.push(buttons.slice(i, i + 2));
 
-  await setDoc(userRef, { last_q_time: Date.now(), active_category: category }, { merge: true });
+  await setDoc(chatRef, { active_category: category }, { merge: true });
   
-  const qText = `📁 *${displayCat}*\n\n❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
+  let qText = `📁 *${displayCat}*\n\n`;
+  if (isGold === 1) qText += `🌟 *سؤال ذهبي! نقاط مضاعفة!* 🌟\n\n`;
+  qText += `❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
   
-  if (messageIdToEdit) {
-      return editTgMessage(chatId, messageIdToEdit, qText, { inline_keyboard });
-  } else {
-      return sendTgMessage(chatId, qText, { inline_keyboard });
-  }
+  if (messageIdToEdit) return editTgMessage(chatId, messageIdToEdit, qText, { inline_keyboard });
+  return sendTgMessage(chatId, qText, { inline_keyboard });
 }
 
 // ==========================================
 // 5. دوال الإدارة والإكسل (Admin & Excel Functions)
 // ==========================================
-async function processExcelImport(document, chatId) {
+async function processExcelImport(document, chatId, userId) {
   const fileName = document.file_name;
-  if (!fileName.endsWith('.xlsx')) return sendTgMessage(chatId, "❌ يرجى إرسال ملف بصيغة `.xlsx` فقط.", getKeyboard(chatId));
-
+  if (!fileName.endsWith('.xlsx')) return sendTgMessage(chatId, "❌ يرجى إرسال ملف بصيغة `.xlsx` فقط.", getKeyboard(userId));
   await sendTgMessage(chatId, "🔄 جاري معالجة البيانات...");
   const fileRes = await fetch(`https://api.telegram.org/bot${getToken()}/getFile?file_id=${document.file_id}`);
   const fileJson = await fileRes.json();
 
   if (fileJson.ok) {
-    const fileBufferResponse = await fetch(`https://api.telegram.org/file/bot${getToken()}/${fileJson.result.file_path}`);
-    const arrayBuffer = await fileBufferResponse.arrayBuffer();
-    const workbook = XLSX.read(arrayBuffer, { type: 'buffer' });
-    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "" });
-
-    const headers = rows[0];
-    const groupIdx = headers.findIndex(h => String(h).includes('المجموعة'));
+    const arrayBuffer = await (await fetch(`https://api.telegram.org/file/bot${getToken()}/${fileJson.result.file_path}`)).arrayBuffer();
+    const rows = XLSX.utils.sheet_to_json(XLSX.read(arrayBuffer, { type: 'buffer' }).Sheets[XLSX.read(arrayBuffer, { type: 'buffer' }).SheetNames[0]], { header: 1, defval: "" });
+    const groupIdx = rows[0].findIndex(h => String(h).includes('المجموعة'));
     let bulkQuestions = [];
 
     for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!String(row[0]).trim() || !String(row[1]).trim()) continue;
+      if (!String(rows[i][0]).trim() || !String(rows[i][1]).trim()) continue;
       let wrong = [];
-      for (let col = 2; col < headers.length; col++) {
-        if (col !== groupIdx && String(row[col]).trim() !== "") wrong.push(String(row[col]).trim());
-      }
-      bulkQuestions.push({
-        question: String(row[0]).trim(), correct: String(row[1]).trim(),
-        wrong: wrong, group: (groupIdx !== -1 && row[groupIdx]) ? String(row[groupIdx]).trim() : 'عام'
-      });
+      for (let col = 2; col < rows[0].length; col++) if (col !== groupIdx && String(rows[i][col]).trim() !== "") wrong.push(String(rows[i][col]).trim());
+      bulkQuestions.push({ question: String(rows[i][0]).trim(), correct: String(rows[i][1]).trim(), wrong: wrong, group: (groupIdx !== -1 && rows[i][groupIdx]) ? String(rows[i][groupIdx]).trim() : 'عام' });
     }
 
     if (bulkQuestions.length > 0) {
       const qSnap = await getDocs(collection(db, "questions"));
-      let deleteBatch = writeBatch(db);
-      qSnap.forEach(d => deleteBatch.delete(d.ref));
-      if (qSnap.size > 0) await deleteBatch.commit();
-
-      let addBatch = writeBatch(db);
-      bulkQuestions.forEach(q => addBatch.set(doc(collection(db, "questions")), q));
-      await addBatch.commit();
-
+      let deleteBatch = writeBatch(db); qSnap.forEach(d => deleteBatch.delete(d.ref)); if (qSnap.size > 0) await deleteBatch.commit();
+      let addBatch = writeBatch(db); bulkQuestions.forEach(q => addBatch.set(doc(collection(db, "questions")), q)); await addBatch.commit();
       const uSnap = await getDocs(collection(db, "users"));
-      let uBatch = writeBatch(db);
-      uSnap.forEach(u => uBatch.update(u.ref, { answered: [] }));
-      if (uSnap.size > 0) await uBatch.commit();
-
-      await sendTgMessage(chatId, `🎉 *تم التحديث!*\nتم إدراج: ${bulkQuestions.length} سؤال.`, getKeyboard(chatId));
+      let uBatch = writeBatch(db); uSnap.forEach(u => uBatch.update(u.ref, { answered: [] })); if (uSnap.size > 0) await uBatch.commit();
+      await sendTgMessage(chatId, `🎉 *تم التحديث!*\nتم إدراج: ${bulkQuestions.length} سؤال.`, getKeyboard(userId));
     }
   }
-}
-
-async function exportQuestions(chatId) {
-  const qSnap = await getDocs(collection(db, "questions"));
-  if (qSnap.empty) return sendTgMessage(chatId, "لا توجد أسئلة للتصدير.", getKeyboard(chatId));
-
-  let allQs = []; qSnap.forEach(d => allQs.push(d.data()));
-  let maxWrong = Math.max(...allQs.map(q => q.wrong?.length || 0));
-
-  let exportHeaders = ['السؤال', 'الإجابة الصحيحة', ...Array.from({length: maxWrong}, (_, i) => `خطأ ${i+1}`), 'المجموعة'];
-  const excelData = [exportHeaders, ...allQs.map(q => [q.question, q.correct, ...Array.from({length: maxWrong}, (_, i) => q.wrong[i] || ''), q.group || 'عام'])];
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(excelData), "Questions");
-  await sendTgDocument(chatId, XLSX.write(wb, { type: "buffer", bookType: "xlsx" }), 'firebase_questions.xlsx', '📁 بنك الأسئلة الحالي');
-}
-
-async function exportUsersReport(chatId) {
-  const uSnap = await getDocs(collection(db, "users"));
-  let allUsers = []; uSnap.forEach(d => allUsers.push(d.data()));
-  allUsers.sort((a, b) => (b.score || 0) - (a.score || 0));
-
-  const excelData = [['المركز', 'اسم المتسابق', 'إجمالي النقاط', 'الأسئلة المجاب عليها']];
-  allUsers.forEach((u, i) => excelData.push([i + 1, u.name || 'مجهول', u.score || 0, (u.answered || []).length]));
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(excelData), "Contestants");
-  await sendTgDocument(chatId, XLSX.write(wb, { type: "buffer", bookType: "xlsx" }), 'contestants_report.xlsx', '📊 تقرير المتسابقين');
 }
 
 // ==========================================
@@ -254,6 +199,7 @@ async function exportUsersReport(chatId) {
 async function handleCallbackQuery(callbackQuery) {
   const { id: callbackId, data, message, from } = callbackQuery;
   const chatId = message.chat.id.toString();
+  const userId = from.id.toString(); // ✨ عزل المستخدم عن المجموعة
   const messageId = message.message_id;
   const userName = from.first_name || "مجهول";
   const originalKeyboard = message.reply_markup?.inline_keyboard || [];
@@ -262,45 +208,76 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (data.startsWith("cat_")) {
     const selectedGroup = data.replace("cat_", "");
-    return askQuestion(chatId, selectedGroup, messageId, callbackId);
+    return askQuestion(chatId, selectedGroup, messageId, callbackId, userId);
   }
 
   if (data === "next_q") {
     const strippedKeyboard = originalKeyboard.filter(row => !row.some(btn => btn.callback_data === "next_q"));
     await editTgMessage(chatId, messageId, null, { inline_keyboard: strippedKeyboard });
-
-    const userSnap = await getDoc(doc(db, "users", chatId));
-    const activeCat = userSnap.exists() ? (userSnap.data().active_category || 'عام') : 'عام';
-    return askQuestion(chatId, activeCat, null, callbackId);
+    const chatSnap = await getDoc(doc(db, "users", chatId));
+    const activeCat = chatSnap.exists() ? (chatSnap.data().active_category || 'عام') : 'عام';
+    return askQuestion(chatId, activeCat, null, callbackId, userId);
   }
 
   if (data.startsWith("c_") || data.startsWith("w_")) {
-    const isCorrect = data.startsWith("c_");
-    const qId = data.split('_')[1];
-    const userRef = doc(db, "users", chatId);
+    const parts = data.split('_');
+    const isCorrect = parts[0] === 'c';
+    const qId = parts[1];
+    const timestamp = isCorrect ? parseInt(parts[2]) : parseInt(parts[3]);
+    const isGold = (isCorrect ? parseInt(parts[3]) : parseInt(parts[4])) === 1;
+
+    const chatRef = doc(db, "users", chatId);
+    const userRef = doc(db, "users", userId);
+    let alertMsg = "";
 
     try {
       await runTransaction(db, async (transaction) => {
-        const uSnap = await transaction.get(userRef);
-        let uData = uSnap.exists() ? uSnap.data() : { score: 0, answered: [], name: userName, last_q_time: 0 };
+        const chatSnap = await transaction.get(chatRef);
+        const uSnap = (chatId === userId) ? chatSnap : await transaction.get(userRef);
         
-        const timeDiff = (Date.now() - (uData.last_q_time || 0)) / 1000;
-        if (timeDiff > TIME_LIMIT_SECONDS && (uData.last_q_time || 0) !== 0) throw new Error("TIMEOUT");
-        if ((uData.answered || []).includes(qId)) throw new Error("ALREADY_ANSWERED");
+        let chatData = chatSnap.exists() ? chatSnap.data() : { answered: [] };
+        let uData = uSnap.exists() ? uSnap.data() : { score: 0, streak: 0, name: userName };
+        
+        if (((Date.now() / 1000) - timestamp) > TIME_LIMIT_SECONDS) throw new Error("TIMEOUT");
+        if ((chatData.answered || []).includes(qId)) throw new Error("ALREADY_ANSWERED");
 
-        transaction.set(userRef, {
-          score: (uData.score || 0) + (isCorrect ? 10 : 0),
-          answered: [...(uData.answered || []), qId],
-          name: userName
-        }, { merge: true });
+        let earnedPoints = 0;
+        let currentStreak = uData.streak || 0;
+
+        if (isCorrect) {
+            earnedPoints = 10;
+            let msgParts = ["✅ إجابة صحيحة! (+10)"];
+            
+            if (((Date.now() / 1000) - timestamp) <= 5) { earnedPoints += 5; msgParts.push("⚡ سرعة خارقة (+5)"); }
+            
+            currentStreak += 1;
+            if (currentStreak >= 3) { earnedPoints += 5; msgParts.push(`🔥 سلسلة ${currentStreak} إجابات (+5)`); }
+            
+            if (isGold) { earnedPoints *= 2; msgParts.push("🌟 ضربة ذهبية! (النقاط x2)"); }
+            
+            alertMsg = msgParts.join("\n") + `\n\nالمجموع: +${earnedPoints} نقطة!`;
+        } else {
+            currentStreak = 0;
+            alertMsg = "❌ إجابة خاطئة، انكسرت سلسلة انتصاراتك!";
+        }
+
+        let updatedChatData = { answered: [...(chatData.answered || []), qId] };
+        let updatedUData = { score: (uData.score || 0) + earnedPoints, streak: currentStreak, name: userName };
+
+        if (chatId === userId) {
+            transaction.set(userRef, { ...updatedChatData, ...updatedUData }, { merge: true });
+        } else {
+            transaction.set(chatRef, updatedChatData, { merge: true });
+            transaction.set(userRef, updatedUData, { merge: true });
+        }
       });
 
-      await answerTgCallback(callbackId, isCorrect ? "✅ إجابة صحيحة! (+10 نقاط)" : "❌ إجابة خاطئة، حظاً أوفر!");
+      await answerTgCallback(callbackId, alertMsg);
+      
       const newKeyboard = originalKeyboard.map(row => row.map(btn => ({
         text: btn.callback_data.startsWith('c_') ? "✅ " + btn.text : (btn.callback_data === data ? "❌ " + btn.text : btn.text),
         callback_data: "ignore"
       })));
-      
       newKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]);
       await editTgMessage(chatId, messageId, null, { inline_keyboard: newKeyboard });
 
@@ -311,7 +288,7 @@ async function handleCallbackQuery(callbackQuery) {
         timeoutKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]); 
         await editTgMessage(chatId, messageId, null, { inline_keyboard: timeoutKeyboard });
       } else if (err.message === "ALREADY_ANSWERED") {
-        await answerTgCallback(callbackId, "⚠️ لقد تم تسجيل إجابتك مسبقاً.");
+        await answerTgCallback(callbackId, "⚠️ لقد تم الإجابة على هذا السؤال بالفعل.");
       }
     }
   }
@@ -322,56 +299,53 @@ async function handleCallbackQuery(callbackQuery) {
 // ==========================================
 async function handleMessage(message) {
   const chatId = message.chat.id.toString();
+  const userId = message.from.id.toString();
+  const isAdmin = (userId === getAdminId());
   const text = message.text || "";
   const document = message.document;
   const userName = message.from.first_name || "مجهول";
-  const userRef = doc(db, "users", chatId);
-
+  
+  const userRef = doc(db, "users", userId);
+  const chatRef = doc(db, "users", chatId); 
   const userSnap = await getDoc(userRef);
-  const currentState = userSnap.exists() ? userSnap.data().state : null;
-  const activeCat = userSnap.exists() ? userSnap.data().active_category : null;
+  const chatSnap = await getDoc(chatRef);
 
   if (text === '/start' || text === '🚀 ابدأ من جديد') {
-    await setDoc(userRef, { score: 0, answered: [], state: null, name: userName, last_q_time: 0, active_category: null });
-    return sendTgMessage(chatId, `أهلاً بك يا *${userName}*! 🚀\nتم تصفير نقاطك. اضغط (سؤال جديد) للبدء:`, getKeyboard(chatId));
+    await setDoc(userRef, { score: 0, streak: 0, name: userName }, { merge: true });
+    await setDoc(chatRef, { answered: [], active_category: null }, { merge: true });
+    return sendTgMessage(chatId, `أهلاً بك يا *${userName}*! 🚀\nتم تصفير الرصيد. اضغط (سؤال جديد) للبدء:`, getKeyboard(userId));
   }
 
-  if (document && chatId === getAdminId() && currentState === "WAITING_FOR_EXCEL") {
+  if (document && isAdmin && (userSnap.exists() && userSnap.data().state === "WAITING_FOR_EXCEL")) {
     await setDoc(userRef, { state: null }, { merge: true });
-    return processExcelImport(document, chatId);
+    return processExcelImport(document, chatId, userId);
   }
 
-  if ((text === '📤 تصدير إكسل' || text === '/export') && chatId === getAdminId()) return exportQuestions(chatId);
-  if (text === '👥 تقرير المتسابقين (إكسل)' && chatId === getAdminId()) return exportUsersReport(chatId);
-  if ((text === '📥 استيراد إكسل' || text === '/import') && chatId === getAdminId()) {
+  if (isAdmin && (text === '📥 استيراد إكسل' || text === '/import')) {
     await setDoc(userRef, { state: "WAITING_FOR_EXCEL" }, { merge: true });
-    return sendTgMessage(chatId, "📥 **أرسل الآن ملف الإكسل (.xlsx)**.", getKeyboard(chatId));
+    return sendTgMessage(chatId, "📥 **أرسل الآن ملف الإكسل (.xlsx)**.", getKeyboard(userId));
   }
 
-  if (text === '🗂️ تغيير القسم') {
-    return showCategories(chatId);
-  }
+  if (text === '🗂️ تغيير القسم') return showCategories(chatId, userId);
 
   if (text === '/quiz' || text === '🎮 سؤال جديد') {
-    if (activeCat) {
-       return askQuestion(chatId, activeCat, null, null); 
-    } else {
-       return showCategories(chatId); 
-    }
+    const activeCat = chatSnap.exists() ? chatSnap.data().active_category : null;
+    if (activeCat) return askQuestion(chatId, activeCat, null, null, userId); 
+    return showCategories(chatId, userId); 
   }
 
   if (text === '/score' || text === '📊 رصيدي الحالي') {
-    return sendTgMessage(chatId, `🏆 رصيدك الحالي: *${userSnap.exists() ? (userSnap.data().score || 0) : 0} نقطة*`, getKeyboard(chatId));
+    const score = userSnap.exists() ? (userSnap.data().score || 0) : 0;
+    return sendTgMessage(chatId, `🏆 رصيدك الحالي: *${score} نقطة*\n🎖️ اللقب: *${getRank(score)}*`, getKeyboard(userId));
   }
 
   if (text === '/top' || text === '🏆 لوحة الشرف') {
     const uSnap = await getDocs(collection(db, "users"));
     let topUsers = uSnap.docs.map(d => d.data()).filter(u => (u.score || 0) > 0).sort((a, b) => b.score - a.score).slice(0, 10);
+    if (topUsers.length === 0) return sendTgMessage(chatId, "لا توجد نقاط مسجلة حتى الآن.", getKeyboard(userId));
     
-    if (topUsers.length === 0) return sendTgMessage(chatId, "لا توجد نقاط مسجلة حتى الآن.", getKeyboard(chatId));
-    
-    let topText = "🏆 *أفضل 10 متسابقين:*\n\n" + topUsers.map((u, i) => `${i + 1}. ${u.name || 'مجهول'} - ${u.score} نقطة`).join('\n');
-    return sendTgMessage(chatId, topText, getKeyboard(chatId));
+    let topText = "🏆 *أفضل المتسابقين:*\n\n" + topUsers.map((u, i) => `${i + 1}. ${u.name || 'مجهول'} - ${u.score} نقطة (${getRank(u.score)})`).join('\n');
+    return sendTgMessage(chatId, topText, getKeyboard(userId));
   }
 }
 
@@ -379,15 +353,11 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بنجاح (بواجهة أزرار نظيفة وخالية من التكرار)!');
-  
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت الخارق يعمل! (الألقاب، السرعة، السلسلة، الذهب، والمجموعات)');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
     else if (body.message) await handleMessage(body.message);
-  } catch (error) {
-    console.error("Execution error:", error);
-  }
-  
+  } catch (error) { console.error("Execution error:", error); }
   return res.status(200).json({ success: true });
 }
