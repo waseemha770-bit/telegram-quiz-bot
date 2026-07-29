@@ -55,6 +55,16 @@ function shuffleArray(array) {
   return arr;
 }
 
+// ✨ فلتر ذكي يمسح كل شيء قبل النقطتين الرأسيتين ":"
+function cleanName(name) {
+  // إذا كان الاسم يحتوي على ":"، نأخذ ما بعدها فقط
+  if (name.includes(':')) {
+    return name.split(':').pop().trim();
+  }
+  // احتياطاً في حال كان هناك أسماء بدون ":"
+  return name.replace(/المجموعة/g, '').replace(/قسم/g, '').replace(/الأولى/g, '').trim();
+}
+
 async function sendTgMessage(chatId, text, replyMarkup = null) {
   const payload = { chat_id: chatId, text: text, parse_mode: "Markdown" };
   if (replyMarkup) payload.reply_markup = replyMarkup;
@@ -103,8 +113,13 @@ async function showCategories(chatId) {
 
   let inline_keyboard = [];
   for (let i = 0; i < groupsArray.length; i += 2) {
-    let row = [{ text: `📁 ${groupsArray[i]}`, callback_data: `cat_${groupsArray[i]}` }];
-    if (groupsArray[i+1]) row.push({ text: `📁 ${groupsArray[i+1]}`, callback_data: `cat_${groupsArray[i+1]}` });
+    let displayName1 = cleanName(groupsArray[i]);
+    let row = [{ text: `📁 ${displayName1}`, callback_data: `cat_${groupsArray[i]}` }];
+    
+    if (groupsArray[i+1]) {
+      let displayName2 = cleanName(groupsArray[i+1]);
+      row.push({ text: `📁 ${displayName2}`, callback_data: `cat_${groupsArray[i+1]}` });
+    }
     inline_keyboard.push(row);
   }
   return sendTgMessage(chatId, "📚 *اختر القسم الذي ترغب في اختباره:*", { inline_keyboard });
@@ -123,9 +138,11 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
     if ((q.group || 'عام') === category && !answered.includes(d.id)) availableQ.push({ id: d.id, ...q });
   });
 
+  let displayCat = cleanName(category);
+
   if (availableQ.length === 0) {
-    const endMsg = `🎉 لقد أتممت جميع أسئلة قسم: *${category}*`;
-    if (callbackId) await answerTgCallback(callbackId, `🎉 أتممت أسئلة: ${category}`);
+    const endMsg = `🎉 لقد أتممت جميع أسئلة: *${displayCat}*`;
+    if (callbackId) await answerTgCallback(callbackId, `🎉 أتممت أسئلة: ${displayCat}`);
     if (messageIdToEdit) return editTgMessage(chatId, messageIdToEdit, endMsg);
     return sendTgMessage(chatId, endMsg, getKeyboard(chatId));
   }
@@ -138,10 +155,9 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   let inline_keyboard = [];
   for (let i = 0; i < buttons.length; i += 2) inline_keyboard.push(buttons.slice(i, i + 2));
 
-  // تحديث المؤقت وتسجيل القسم النشط لعدم سؤال المستخدم مرة أخرى
   await setDoc(userRef, { last_q_time: Date.now(), active_category: category }, { merge: true });
   
-  const qText = `📁 قسم: *${category}*\n\n❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
+  const qText = `📁 *${displayCat}*\n\n❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
   
   if (messageIdToEdit) {
       return editTgMessage(chatId, messageIdToEdit, qText, { inline_keyboard });
@@ -244,24 +260,20 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (data === "ignore") return answerTgCallback(callbackId, "⚠️ لا يمكنك الضغط هنا مجدداً.");
 
-  // 1. اختيار القسم (Category)
   if (data.startsWith("cat_")) {
     const selectedGroup = data.replace("cat_", "");
     return askQuestion(chatId, selectedGroup, messageId, callbackId);
   }
 
-  // 2. طلب السؤال التالي (Next Question)
   if (data === "next_q") {
-    // حذف زر "التالي" من الرسالة السابقة لتجنب الضغط المزدوج
     const strippedKeyboard = originalKeyboard.filter(row => !row.some(btn => btn.callback_data === "next_q"));
     await editTgMessage(chatId, messageId, null, { inline_keyboard: strippedKeyboard });
 
     const userSnap = await getDoc(doc(db, "users", chatId));
     const activeCat = userSnap.exists() ? (userSnap.data().active_category || 'عام') : 'عام';
-    return askQuestion(chatId, activeCat, null, callbackId); // نرسله كرسالة جديدة
+    return askQuestion(chatId, activeCat, null, callbackId);
   }
 
-  // 3. الإجابة على السؤال
   if (data.startsWith("c_") || data.startsWith("w_")) {
     const isCorrect = data.startsWith("c_");
     const qId = data.split('_')[1];
@@ -283,14 +295,12 @@ async function handleCallbackQuery(callbackQuery) {
         }, { merge: true });
       });
 
-      // إذا نجحت الإجابة
       await answerTgCallback(callbackId, isCorrect ? "✅ إجابة صحيحة! (+10 نقاط)" : "❌ إجابة خاطئة، حظاً أوفر!");
       const newKeyboard = originalKeyboard.map(row => row.map(btn => ({
         text: btn.callback_data.startsWith('c_') ? "✅ " + btn.text : (btn.callback_data === data ? "❌ " + btn.text : btn.text),
         callback_data: "ignore"
       })));
       
-      // ✨ إضافة زر السؤال التالي تحت الإجابة
       newKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]);
       await editTgMessage(chatId, messageId, null, { inline_keyboard: newKeyboard });
 
@@ -298,7 +308,7 @@ async function handleCallbackQuery(callbackQuery) {
       if (err.message === "TIMEOUT") {
         await answerTgCallback(callbackId, `⏳ انتهى الوقت!`);
         const timeoutKeyboard = originalKeyboard.map(row => row.map(b => ({ text: "⏳ " + b.text, callback_data: "ignore" })));
-        timeoutKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]); // إتاحة زر التالي حتى لو انتهى الوقت
+        timeoutKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]); 
         await editTgMessage(chatId, messageId, null, { inline_keyboard: timeoutKeyboard });
       } else if (err.message === "ALREADY_ANSWERED") {
         await answerTgCallback(callbackId, "⚠️ لقد تم تسجيل إجابتك مسبقاً.");
@@ -326,13 +336,11 @@ async function handleMessage(message) {
     return sendTgMessage(chatId, `أهلاً بك يا *${userName}*! 🚀\nتم تصفير نقاطك. اضغط (سؤال جديد) للبدء:`, getKeyboard(chatId));
   }
 
-  // المدير يرسل الملف
   if (document && chatId === getAdminId() && currentState === "WAITING_FOR_EXCEL") {
     await setDoc(userRef, { state: null }, { merge: true });
     return processExcelImport(document, chatId);
   }
 
-  // أوامر الإدارة
   if ((text === '📤 تصدير إكسل' || text === '/export') && chatId === getAdminId()) return exportQuestions(chatId);
   if (text === '👥 تقرير المتسابقين (إكسل)' && chatId === getAdminId()) return exportUsersReport(chatId);
   if ((text === '📥 استيراد إكسل' || text === '/import') && chatId === getAdminId()) {
@@ -340,17 +348,15 @@ async function handleMessage(message) {
     return sendTgMessage(chatId, "📥 **أرسل الآن ملف الإكسل (.xlsx)**.", getKeyboard(chatId));
   }
 
-  // تغيير القسم يدوياً
   if (text === '🗂️ تغيير القسم') {
     return showCategories(chatId);
   }
 
-  // طلب سؤال جديد
   if (text === '/quiz' || text === '🎮 سؤال جديد') {
     if (activeCat) {
-       return askQuestion(chatId, activeCat, null, null); // إرسال سؤال فوراً دون سؤال المستخدم
+       return askQuestion(chatId, activeCat, null, null); 
     } else {
-       return showCategories(chatId); // سؤاله عن القسم لأول مرة
+       return showCategories(chatId); 
     }
   }
 
@@ -373,7 +379,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بنجاح (مع ميزة تخطي اختيار الأقسام وتسريع اللعب)!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بنجاح (بواجهة أزرار نظيفة وخالية من التكرار)!');
   
   try {
     const body = req.body;
