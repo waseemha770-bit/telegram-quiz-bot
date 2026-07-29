@@ -13,7 +13,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = initializeFirestore(app, { experimentalForceLongPolling: true });
 
-const TIME_LIMIT_SECONDS = 20; // ⏱️ وقت السؤال
+const TIME_LIMIT_SECONDS = 20; // ⏱️ وقت السؤال المسموح
 
 // ==========================================
 // 2. الثوابت والقوائم (Constants & Keyboards)
@@ -101,7 +101,7 @@ async function sendTgDocument(chatId, fileBuffer, fileName, caption) {
 async function answerTgCallback(callbackId, text) {
   await fetch(`https://api.telegram.org/bot${getToken()}/answerCallbackQuery`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ callback_query_id: callbackId, text: text, show_alert: true })
+    body: JSON.stringify({ callback_query_id: callbackId, text: text, show_alert: true }) // alert منبثق
   });
 }
 
@@ -149,7 +149,9 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   }
 
   const q = availableQ[Math.floor(Math.random() * availableQ.length)];
-  const timestamp = Math.floor(Date.now() / 1000);
+  
+  // ✨ حفظ الوقت بالملي ثانية للدقة ✨
+  const timestamp = Date.now(); 
   const isGold = Math.random() < 0.15 ? 1 : 0; 
   
   let rawButtons = [{ text: q.correct, callback_data: `c_${q.id}_${timestamp}_${isGold}` }];
@@ -274,7 +276,11 @@ async function handleCallbackQuery(callbackQuery) {
         let chatData = chatSnap.exists() ? chatSnap.data() : { answered: [] };
         let uData = uSnap.exists() ? uSnap.data() : { score: 0, streak: 0, name: userName };
         
-        if (((Date.now() / 1000) - timestamp) > TIME_LIMIT_SECONDS) throw new Error("TIMEOUT");
+        // ✨ حساب الوقت المستغرق بالثانية وأجزاء الثانية ✨
+        const currentTime = Date.now();
+        const timeDiffSeconds = (currentTime - timestamp) / 1000;
+        
+        if (timeDiffSeconds > TIME_LIMIT_SECONDS) throw new Error("TIMEOUT");
         if ((chatData.answered || []).includes(qId)) throw new Error("ALREADY_ANSWERED");
 
         let earnedPoints = 0;
@@ -282,15 +288,18 @@ async function handleCallbackQuery(callbackQuery) {
 
         if (isCorrect) {
             earnedPoints = 10;
-            let msgParts = ["✅ إجابة صحيحة! (+10)"];
-            if (((Date.now() / 1000) - timestamp) <= 5) { earnedPoints += 5; msgParts.push("⚡ سرعة خارقة (+5)"); }
+            let msgParts = [`✅ إجابة صحيحة! (+10)`];
+            msgParts.push(`⏱️ استغرقت: ${timeDiffSeconds.toFixed(1)} ثانية`); // عرض وقت الإجابة
+            
+            if (timeDiffSeconds <= 5) { earnedPoints += 5; msgParts.push("⚡ سرعة خارقة (+5)"); }
             currentStreak += 1;
             if (currentStreak >= 3) { earnedPoints += 5; msgParts.push(`🔥 سلسلة ${currentStreak} إجابات (+5)`); }
             if (isGold) { earnedPoints *= 2; msgParts.push("🌟 ضربة ذهبية! (النقاط x2)"); }
+            
             alertMsg = msgParts.join("\n") + `\n\nالمجموع: +${earnedPoints} نقطة!`;
         } else {
             currentStreak = 0;
-            alertMsg = "❌ إجابة خاطئة، انكسرت سلسلة انتصاراتك!";
+            alertMsg = `❌ إجابة خاطئة!\n⏱️ استغرقت: ${timeDiffSeconds.toFixed(1)} ثانية\nانكسرت سلسلة انتصاراتك!`;
         }
 
         let updatedChatData = { answered: [...(chatData.answered || []), qId] };
@@ -358,11 +367,11 @@ async function handleMessage(message) {
     await setDoc(chatRef, { answered: [], active_category: null }, { merge: true });
     
     const welcomeText = `مرحباً بك يا *${userName}* في عالم التحدي والمعرفة! 🌟🎮\n\n` +
-                        `*📋 قواعد اللعبة:* \n` +
+                        `*📋 قواعد الإجابة الصحيحة:* \n` +
                         `⏱️ *الوقت:* أمامك 20 ثانية فقط للإجابة.\n` +
                         `⚡ *السرعة:* إجابتك في أول 5 ثوانٍ تمنحك (+5 نقاط إضافية).\n` +
                         `🔥 *السلسلة:* 3 إجابات صحيحة متتالية تضاعف نقاطك!\n` +
-                        `🌟 *الأسئلة الذهبية:* تظهر فجأة وتضاعف رصيدك فوراً.\n\n` +
+                        `🌟 *الأسئلة الذهبية:* تظهر فجأة وتضاعف رصيدك.\n\n` +
                         `اضغط على (🎮 *سؤال جديد*) من القائمة بالأسفل للبدء! 👇`;
                         
     return sendTgMessage(chatId, welcomeText, getKeyboard(userId));
@@ -405,7 +414,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل الآن بكفاءة وبدون أخطاء برمجية!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل الآن مع إظهار زمن الإجابة بدقة!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
