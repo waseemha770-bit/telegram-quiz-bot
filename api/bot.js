@@ -339,12 +339,11 @@ async function handleMessage(message) {
   const userRef = doc(db, "users", userId);
   const chatRef = doc(db, "users", chatId); 
   
-  // الترحيب التلقائي في المجموعات
   if (message.new_chat_members) {
     for (let member of message.new_chat_members) {
-      if (member.is_bot) {
-        await sendTgMessage(chatId, `مرحباً بالجميع! 🌟\nأنا بوت المسابقات الذكي. أرسلوا /quiz لنبدأ!`);
-      } else {
+      if (member.is_bot && member.username === message.chat.username) {
+        await sendTgMessage(chatId, `مرحباً بالجميع! 🌟\nأنا بوت المسابقات الذكي. جاهزون للتحدي؟ أرسلوا /quiz لنبدأ!`);
+      } else if (!member.is_bot) {
         await sendTgMessage(chatId, `أهلاً بك يا [${member.first_name}](tg://user?id=${member.id}) في المجموعة! 🥳\nهل أنت مستعد لاختبار معلوماتك؟ أرسل /quiz للبدء!`);
       }
     }
@@ -363,7 +362,7 @@ async function handleMessage(message) {
                         `⏱️ *الوقت:* أمامك 20 ثانية فقط للإجابة.\n` +
                         `⚡ *السرعة:* إجابتك في أول 5 ثوانٍ تمنحك (+5 نقاط إضافية).\n` +
                         `🔥 *السلسلة:* 3 إجابات صحيحة متتالية تضاعف نقاطك!\n` +
-                        `🌟 *الأسئلة الذهبية:* تظهر فجأة وتضاعف رصيدك.\n\n` +
+                        `🌟 *الأسئلة الذهبية:* تظهر فجأة وتضاعف رصيدك فوراً.\n\n` +
                         `اضغط على (🎮 *سؤال جديد*) من القائمة بالأسفل للبدء! 👇`;
                         
     return sendTgMessage(chatId, welcomeText, getKeyboard(userId));
