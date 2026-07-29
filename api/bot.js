@@ -201,7 +201,7 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
 }
 
 // ==========================================
-// 5. دوال الإدارة، الإكسل والرسوم البيانية
+// 5. دوال الإدارة والإكسل والرسوم البيانية
 // ==========================================
 async function processExcelImport(document, chatId, isOwner, isAdmin) {
   const fileName = document.file_name;
@@ -257,14 +257,12 @@ async function exportUsersReport(chatId) {
   await sendTgDocument(chatId, XLSX.write(wb, { type: "buffer", bookType: "xlsx" }), 'contestants_report.xlsx', '📊 تقرير المتسابقين');
 }
 
-// ✨ الدالة السحرية لرسم المخطط البياني وإرساله كصورة ✨
 async function sendGraphicalChart(chatId) {
   await sendTgMessage(chatId, "⏳ جاري توليد الرسم البياني للتفاعل...");
   const uSnap = await getDocs(collection(db, "users"));
   let categoryTotals = {};
   let totalPlays = 0;
 
-  // تجميع الإحصائيات من ملفات جميع المستخدمين
   uSnap.forEach(d => {
       let plays = d.data().category_plays || {};
       for (let cat in plays) {
@@ -275,12 +273,10 @@ async function sendGraphicalChart(chatId) {
 
   if (totalPlays === 0) return sendTgMessage(chatId, "⚠️ لا توجد بيانات تفاعل كافية لرسم المخطط حتى الآن.");
 
-  // ترتيب الأقسام للحصول على أكثر 10 أقسام شعبية
   let sortedCats = Object.keys(categoryTotals).sort((a, b) => categoryTotals[b] - categoryTotals[a]).slice(0, 10);
   let labels = sortedCats.map(c => cleanName(c));
   let data = sortedCats.map(c => categoryTotals[c]);
 
-  // إعدادات مكتبة الرسم البياني
   const chartConfig = {
       type: 'bar',
       data: {
@@ -302,10 +298,8 @@ async function sendGraphicalChart(chatId) {
       }
   };
 
-  // توليد الرابط السحري للصورة
   const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&w=600&h=400&bkg=white`;
 
-  // إرسال الصورة إلى تيليجرام
   const payload = {
       chat_id: chatId,
       photo: chartUrl,
@@ -456,7 +450,6 @@ async function handleCallbackQuery(callbackQuery) {
         let currentStreak = uData.streak || 0;
         let categoryPlays = uData.category_plays || {};
         
-        // ✨ تسجيل إحصائيات الأقسام للرسم البياني ✨
         categoryPlays[activeCat] = (categoryPlays[activeCat] || 0) + 1;
 
         if (isCorrect) {
@@ -546,9 +539,18 @@ async function handleMessage(message) {
   const userSnap = await getDoc(userRef);
   const chatSnap = await getDoc(chatRef);
 
-  if (isOwner && userSnap.exists() && userSnap.data().state === "WAITING_FOR_ADMIN_ADD") {
+  let currentState = userSnap.exists() ? userSnap.data().state : null;
+
+  // ✨ حل ذكي للتعليق: مسح حالة الانتظار عند اختيار أي زر من القائمة السفلية ✨
+  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل'];
+  if (knownCommands.includes(text) && currentState) {
+    await setDoc(userRef, { state: null }, { merge: true });
+    currentState = null; // نُفرغ الحالة الحالية فوراً ليكمل التنفيذ أدناه
+  }
+
+  if (isOwner && currentState === "WAITING_FOR_ADMIN_ADD") {
     const newAdminId = text.trim();
-    if (!/^\d+$/.test(newAdminId)) return sendTgMessage(chatId, "⚠️ يرجى إرسال أرقام الآيدي (ID) فقط.", currentKeyboard);
+    if (!/^\d+$/.test(newAdminId)) return sendTgMessage(chatId, "⚠️ يرجى إرسال أرقام الآيدي (ID) فقط.\n💡 (أو اضغط على أي زر لإلغاء هذه العملية)", currentKeyboard);
     if (!adminsArray.includes(newAdminId)) {
        adminsArray.push(newAdminId);
        await setDoc(adminDocRef, { list: adminsArray }, { merge: true });
@@ -564,7 +566,6 @@ async function handleMessage(message) {
     return sendTgMessage(chatId, `📢 *لوحة إرسال الأسئلة إلى (${groupSnap.data().name}):*\n\nكيف ترغب في اختيار السؤال؟`, { inline_keyboard });
   }
 
-  // ✨ زر إرسال الرسم البياني الجديد ✨
   if (isAdmin && text === '📈 إحصائيات التفاعل') {
     return sendGraphicalChart(chatId);
   }
@@ -581,19 +582,18 @@ async function handleMessage(message) {
     return sendTgMessage(chatId, welcomeText, currentKeyboard);
   }
 
-  if (document && isAdmin && (userSnap.exists() && userSnap.data().state === "WAITING_FOR_EXCEL")) {
+  if (document && isAdmin && currentState === "WAITING_FOR_EXCEL") {
     await setDoc(userRef, { state: null }, { merge: true });
     return processExcelImport(document, chatId, isOwner, isAdmin);
   }
 
   if (isAdmin && (text === '📥 استيراد إكسل' || text === '/import')) {
     await setDoc(userRef, { state: "WAITING_FOR_EXCEL" }, { merge: true });
-    return sendTgMessage(chatId, "📥 **أرسل الآن ملف الإكسل (.xlsx)**.", currentKeyboard);
+    return sendTgMessage(chatId, "📥 **أرسل الآن ملف الإكسل (.xlsx)**.\n💡 (لإلغاء العملية اضغط على أي زر)", currentKeyboard);
   }
 
   if (isAdmin && (text === '📤 تصدير إكسل' || text === '/export')) return exportQuestions(chatId);
   
-  // ✨ إصلاح المشكلة الأولى (عدم تجاوب الزر) ✨
   if (isAdmin && (text === '👥 تقرير المتسابقين' || text === '👥 تقرير المتسابقين (إكسل)')) return exportUsersReport(chatId);
 
   if (text === '🗂️ تغيير القسم') return showCategories(chatId, isOwner, isAdmin);
@@ -622,7 +622,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة مع نظام توليد الرسوم البيانية وإصلاح زر التقارير!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. تم إصلاح مشكلة الإضافة وتحديث الإحصائيات!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
