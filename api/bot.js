@@ -13,7 +13,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = initializeFirestore(app, { experimentalForceLongPolling: true });
 
-const TIME_LIMIT_SECONDS = 20;
+// ⏱️ زيادة الوقت إلى 30 ثانية لتجربة مستخدم أفضل وأكثر استقراراً
+const TIME_LIMIT_SECONDS = 30;
 
 // ==========================================
 // 2. قوائم الأزرار (Keyboards)
@@ -216,7 +217,6 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   const qSnap = await getDocs(collection(db, "questions"));
   let availableQ = [];
   
-  // ✨ حفظ بيانات السؤال كاملة ليتم ترتيبها ✨
   qSnap.forEach(d => {
     if ((d.data().group || 'عام') === category && !answered.includes(d.id)) {
         availableQ.push({ doc: d, data: d.data() });
@@ -232,10 +232,9 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
     return sendTgMessage(chatId, endMsg, getKeyboard(isOwner, isAdmin));
   }
 
-  // ✨ الترتيب التصاعدي حسب رقم الصف في الإكسل (حقل order) ✨
+  // الترتيب التصاعدي حسب الإكسل
   availableQ.sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
 
-  // ✨ اختيار السؤال الأول في الترتيب بدلاً من الاختيار العشوائي ✨
   const selectedItem = availableQ[0];
   const q = selectedItem.data;
   const qId = selectedItem.doc.id;
@@ -245,8 +244,6 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   
   let rawButtons = [{ text: q.correct, callback_data: `c_${qId}_${timestamp}_${isGold}` }];
   (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
-  
-  // خلط الإجابات فقط لضمان التحدي
   rawButtons = shuffleArray(rawButtons);
   let inline_keyboard = buildDynamicKeyboard(rawButtons); 
 
@@ -276,7 +273,6 @@ async function processExcelImport(document, chatId, isOwner, isAdmin) {
     const groupIdx = rows[0].findIndex(h => String(h).includes('المجموعة'));
     let bulkQuestions = [];
 
-    // ✨ إضافة حقل order لحفظ الترتيب الأصلي للأسئلة ✨
     for (let i = 1; i < rows.length; i++) {
       if (!String(rows[i][0]).trim() || !String(rows[i][1]).trim()) continue;
       let wrong = [];
@@ -286,7 +282,7 @@ async function processExcelImport(document, chatId, isOwner, isAdmin) {
           correct: String(rows[i][1]).trim(), 
           wrong: wrong, 
           group: (groupIdx !== -1 && rows[i][groupIdx]) ? String(rows[i][groupIdx]).trim() : 'عام',
-          order: i // تسجيل رقم الصف لضمان التسلسل
+          order: i 
       });
     }
 
@@ -306,7 +302,6 @@ async function exportQuestions(chatId) {
   if (qSnap.empty) return sendTgMessage(chatId, "لا توجد أسئلة للتصدير.");
   let allQs = []; qSnap.forEach(d => allQs.push(d.data()));
   
-  // ✨ ترتيب الأسئلة المصدرة حسب الترتيب الأصلي ✨
   allQs.sort((a, b) => (a.order || 0) - (b.order || 0));
   
   let maxWrong = Math.max(...allQs.map(q => q.wrong?.length || 0));
@@ -452,8 +447,6 @@ async function handleCallbackQuery(callbackQuery) {
     let matchingQ = [];
     qSnap.forEach(d => { if ((d.data().group || 'عام') === category) matchingQ.push(d); });
     if (matchingQ.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
-    
-    // حتى في الإرسال العشوائي، يمكننا تركه عشوائياً كما هو لأن المدير اختار "سؤال عشوائي"
     const randomDoc = matchingQ[Math.floor(Math.random() * matchingQ.length)];
     await sendQuestionToGroup(groupId, randomDoc, category);
     await answerTgCallback(callbackId, "✅ تم إرسال السؤال عشوائياً للمجموعة!");
@@ -469,7 +462,6 @@ async function handleCallbackQuery(callbackQuery) {
     qSnap.forEach(d => { if ((d.data().group || 'عام') === category) qList.push({ id: d.id, ...d.data() }); });
     if (qList.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
     
-    // ✨ ترتيب قائمة الأسئلة المحددة تصاعدياً حسب الترتيب الأصلي في الإكسل ✨
     qList.sort((a, b) => (a.order || 0) - (b.order || 0));
 
     let inline_keyboard = qList.map(q => ([{ text: q.question.length > 35 ? q.question.substring(0, 35) + '...' : q.question, callback_data: `send_q_${q.id}` }]));
@@ -531,12 +523,21 @@ async function handleCallbackQuery(callbackQuery) {
     return askQuestion(chatId, activeCat, null, callbackId, isOwner, isAdmin);
   }
 
+  // ✨ المعالجة الجذرية لخلل الأزرار واختفاء الاستجابة ✨
   if (data.startsWith("c_") || data.startsWith("w_")) {
     const parts = data.split('_');
     const isCorrect = parts[0] === 'c';
     const qId = parts[1];
-    const timestamp = parseInt(parts[2]);
-    const isGold = parseInt(parts[3]) === 1;
+    
+    // الحل الجذري لمشكلة قراءة الوقت الخطأ
+    let timestamp, isGold;
+    if (isCorrect) {
+        timestamp = parseInt(parts[2]);
+        isGold = parseInt(parts[3]) === 1;
+    } else {
+        timestamp = parseInt(parts[3]);
+        isGold = parseInt(parts[4]) === 1;
+    }
 
     const chatRef = doc(db, "users", chatId);
     const userRef = doc(db, "users", userId);
@@ -589,14 +590,17 @@ async function handleCallbackQuery(callbackQuery) {
       });
 
       await answerTgCallback(callbackId, alertMsg);
+      
+      // تأمين الخوارزمية ضد أي انهيار برمجي
       const newKeyboard = originalKeyboard.map(row => row.map(btn => ({
-        text: btn.callback_data.startsWith('c_') ? "✅ " + btn.text : (btn.callback_data === data ? "❌ " + btn.text : btn.text),
+        text: (btn.callback_data && btn.callback_data.startsWith('c_')) ? "✅ " + btn.text : (btn.callback_data === data ? "❌ " + btn.text : btn.text),
         callback_data: "ignore"
       })));
       newKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]);
       await editTgMessage(chatId, messageId, null, { inline_keyboard: newKeyboard });
 
     } catch (err) {
+      console.error("Answer error:", err); // مفيد لاكتشاف المشاكل مستقبلاً في Vercel
       if (err.message === "TIMEOUT") {
         await answerTgCallback(callbackId, `⏳ انتهى الوقت!`);
         const timeoutKeyboard = originalKeyboard.map(row => row.map(b => ({ text: "⏳ " + b.text, callback_data: "ignore" })));
@@ -604,6 +608,9 @@ async function handleCallbackQuery(callbackQuery) {
         await editTgMessage(chatId, messageId, null, { inline_keyboard: timeoutKeyboard });
       } else if (err.message === "ALREADY_ANSWERED") {
         await answerTgCallback(callbackId, "⚠️ لقد تم الإجابة على هذا السؤال بالفعل.");
+      } else {
+        // ✨ هذا السطر يمنع "عدم الاستجابة" لأي سبب برمجي طارئ مستقبلاً
+        await answerTgCallback(callbackId, "⚠️ عذراً، حدث خطأ تقني أثناء تسجيل إجابتك.");
       }
     }
   }
@@ -689,7 +696,7 @@ async function handleMessage(message) {
   if (text === '/start' || text === '🚀 ابدأ من جديد') {
     await setDoc(userRef, { score: 0, streak: 0, name: userName }, { merge: true });
     await setDoc(chatRef, { answered: [], active_category: null }, { merge: true });
-    const welcomeText = `مرحباً بك يا *${userName}* في عالم التحدي والمعرفة! 🌟🎮\n\n*📋 قواعد الإجابة الصحيحة:* \n⏱️ *الوقت:* أمامك 20 ثانية فقط للإجابة.\n⚡ *السرعة:* إجابتك في أول 5 ثوانٍ تمنحك (+5 نقاط إضافية).\n🔥 *السلسلة:* 3 إجابات صحيحة متتالية تضاعف نقاطك!\n🌟 *الأسئلة الذهبية:* تظهر فجأة وتضاعف رصيدك.\n\nاضغط على (🎮 *سؤال جديد*) من القائمة بالأسفل للبدء! 👇`;
+    const welcomeText = `مرحباً بك يا *${userName}* في عالم التحدي والمعرفة! 🌟🎮\n\n*📋 قواعد الإجابة الصحيحة:* \n⏱️ *الوقت:* أمامك 30 ثانية فقط للإجابة.\n⚡ *السرعة:* إجابتك في أول 5 ثوانٍ تمنحك (+5 نقاط إضافية).\n🔥 *السلسلة:* 3 إجابات صحيحة متتالية تضاعف نقاطك!\n🌟 *الأسئلة الذهبية:* تظهر فجأة وتضاعف رصيدك.\n\nاضغط على (🎮 *سؤال جديد*) من القائمة بالأسفل للبدء! 👇`;
     return sendTgMessage(chatId, welcomeText, currentKeyboard);
   }
 
@@ -733,7 +740,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. الآن يعرض الأسئلة بالتسلسل الأصلي الموجود في ملف الإكسل بالضبط!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. تم سد ثغرة توقف الأزرار نهائياً وزيادة الأمان!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
