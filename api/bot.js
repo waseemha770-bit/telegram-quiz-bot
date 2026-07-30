@@ -93,7 +93,7 @@ function getRank(score) {
   return "أسطورة المعرفة 🔥";
 }
 
-function buildDynamicKeyboard(buttonsArray, maxLength = 20) {
+function buildDynamicKeyboard(buttonsArray) {
   let inline_keyboard = [];
   let currentRow = [];
   let currentRowChars = 0; 
@@ -215,8 +215,12 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
 
   const qSnap = await getDocs(collection(db, "questions"));
   let availableQ = [];
+  
+  // ✨ حفظ بيانات السؤال كاملة ليتم ترتيبها ✨
   qSnap.forEach(d => {
-    if ((d.data().group || 'عام') === category && !answered.includes(d.id)) availableQ.push(d);
+    if ((d.data().group || 'عام') === category && !answered.includes(d.id)) {
+        availableQ.push({ doc: d, data: d.data() });
+    }
   });
 
   let displayCat = cleanDisplayName(category.includes('-') ? category.split('-').pop() : category);
@@ -228,14 +232,21 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
     return sendTgMessage(chatId, endMsg, getKeyboard(isOwner, isAdmin));
   }
 
-  const randomDoc = availableQ[Math.floor(Math.random() * availableQ.length)];
-  const q = randomDoc.data();
-  const qId = randomDoc.id;
+  // ✨ الترتيب التصاعدي حسب رقم الصف في الإكسل (حقل order) ✨
+  availableQ.sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
+
+  // ✨ اختيار السؤال الأول في الترتيب بدلاً من الاختيار العشوائي ✨
+  const selectedItem = availableQ[0];
+  const q = selectedItem.data;
+  const qId = selectedItem.doc.id;
+  
   const timestamp = Date.now(); 
   const isGold = Math.random() < 0.15 ? 1 : 0; 
   
   let rawButtons = [{ text: q.correct, callback_data: `c_${qId}_${timestamp}_${isGold}` }];
   (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
+  
+  // خلط الإجابات فقط لضمان التحدي
   rawButtons = shuffleArray(rawButtons);
   let inline_keyboard = buildDynamicKeyboard(rawButtons); 
 
@@ -265,11 +276,18 @@ async function processExcelImport(document, chatId, isOwner, isAdmin) {
     const groupIdx = rows[0].findIndex(h => String(h).includes('المجموعة'));
     let bulkQuestions = [];
 
+    // ✨ إضافة حقل order لحفظ الترتيب الأصلي للأسئلة ✨
     for (let i = 1; i < rows.length; i++) {
       if (!String(rows[i][0]).trim() || !String(rows[i][1]).trim()) continue;
       let wrong = [];
       for (let col = 2; col < rows[0].length; col++) if (col !== groupIdx && String(rows[i][col]).trim() !== "") wrong.push(String(rows[i][col]).trim());
-      bulkQuestions.push({ question: String(rows[i][0]).trim(), correct: String(rows[i][1]).trim(), wrong: wrong, group: (groupIdx !== -1 && rows[i][groupIdx]) ? String(rows[i][groupIdx]).trim() : 'عام' });
+      bulkQuestions.push({ 
+          question: String(rows[i][0]).trim(), 
+          correct: String(rows[i][1]).trim(), 
+          wrong: wrong, 
+          group: (groupIdx !== -1 && rows[i][groupIdx]) ? String(rows[i][groupIdx]).trim() : 'عام',
+          order: i // تسجيل رقم الصف لضمان التسلسل
+      });
     }
 
     if (bulkQuestions.length > 0) {
@@ -278,7 +296,7 @@ async function processExcelImport(document, chatId, isOwner, isAdmin) {
       let addBatch = writeBatch(db); bulkQuestions.forEach(q => addBatch.set(doc(collection(db, "questions")), q)); await addBatch.commit();
       const uSnap = await getDocs(collection(db, "users"));
       let uBatch = writeBatch(db); uSnap.forEach(u => uBatch.update(u.ref, { answered: [] })); if (uSnap.size > 0) await uBatch.commit();
-      await sendTgMessage(chatId, `🎉 *تم التحديث!*\nتم إدراج: ${bulkQuestions.length} سؤال.`, getKeyboard(isOwner, isAdmin));
+      await sendTgMessage(chatId, `🎉 *تم التحديث!*\nتم إدراج: ${bulkQuestions.length} سؤال، مع حفظ الترتيب الأصلي.`, getKeyboard(isOwner, isAdmin));
     }
   }
 }
@@ -287,6 +305,10 @@ async function exportQuestions(chatId) {
   const qSnap = await getDocs(collection(db, "questions"));
   if (qSnap.empty) return sendTgMessage(chatId, "لا توجد أسئلة للتصدير.");
   let allQs = []; qSnap.forEach(d => allQs.push(d.data()));
+  
+  // ✨ ترتيب الأسئلة المصدرة حسب الترتيب الأصلي ✨
+  allQs.sort((a, b) => (a.order || 0) - (b.order || 0));
+  
   let maxWrong = Math.max(...allQs.map(q => q.wrong?.length || 0));
   let exportHeaders = ['السؤال', 'الإجابة الصحيحة', ...Array.from({length: maxWrong}, (_, i) => `خطأ ${i+1}`), 'المجموعة'];
   const excelData = [exportHeaders, ...allQs.map(q => [q.question, q.correct, ...Array.from({length: maxWrong}, (_, i) => q.wrong[i] || ''), q.group || 'عام'])];
@@ -430,6 +452,8 @@ async function handleCallbackQuery(callbackQuery) {
     let matchingQ = [];
     qSnap.forEach(d => { if ((d.data().group || 'عام') === category) matchingQ.push(d); });
     if (matchingQ.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
+    
+    // حتى في الإرسال العشوائي، يمكننا تركه عشوائياً كما هو لأن المدير اختار "سؤال عشوائي"
     const randomDoc = matchingQ[Math.floor(Math.random() * matchingQ.length)];
     await sendQuestionToGroup(groupId, randomDoc, category);
     await answerTgCallback(callbackId, "✅ تم إرسال السؤال عشوائياً للمجموعة!");
@@ -445,6 +469,9 @@ async function handleCallbackQuery(callbackQuery) {
     qSnap.forEach(d => { if ((d.data().group || 'عام') === category) qList.push({ id: d.id, ...d.data() }); });
     if (qList.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
     
+    // ✨ ترتيب قائمة الأسئلة المحددة تصاعدياً حسب الترتيب الأصلي في الإكسل ✨
+    qList.sort((a, b) => (a.order || 0) - (b.order || 0));
+
     let inline_keyboard = qList.map(q => ([{ text: q.question.length > 35 ? q.question.substring(0, 35) + '...' : q.question, callback_data: `send_q_${q.id}` }]));
     const mainCat = category.split('-')[0].trim();
     inline_keyboard.push([{ text: "🔙 رجوع للأقسام", callback_data: `smcat_${mainCat}` }]);
@@ -603,7 +630,6 @@ async function handleMessage(message) {
   const userRef = doc(db, "users", userId);
   const chatRef = doc(db, "users", chatId); 
   
-  // ✨ دالة الربط بالمجموعة ✨
   if (isAdmin && (text === '/link' || text === '🔗 ربط بمجموعة')) {
     if (message.chat.type === 'private') {
       return sendTgMessage(chatId, "⚠️ **تنبيه:** لا يمكن ربط البوت من المحادثة الخاصة!\n\n💡 **طريقة الربط:**\n1. قم بإضافة البوت إلى مجموعتك.\n2. اذهب إلى المجموعة واكتب الأمر `/link` هناك.", currentKeyboard);
@@ -707,7 +733,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ تم التحديث بنجاح. تمت إضافة زر "🔗 ربط بمجموعة" لجميع المشرفين!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. الآن يعرض الأسئلة بالتسلسل الأصلي الموجود في ملف الإكسل بالضبط!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
