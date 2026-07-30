@@ -1,8 +1,8 @@
 // ==========================================
 // 1. المكتبات والإعدادات (Imports & Config)
 // ==========================================
-import { initializeApp } from 'firebase/app';
-import { initializeFirestore, collection, getDocs, doc, setDoc, getDoc, writeBatch, runTransaction } from 'firebase/firestore';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeFirestore, collection, getDocs, doc, setDoc, getDoc, writeBatch } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 
 const firebaseConfig = {
@@ -10,10 +10,10 @@ const firebaseConfig = {
   projectId: process.env.FIREBASE_PROJECT_ID,
 };
 
-const app = initializeApp(firebaseConfig);
+// ✨ تأمين الاتصال لبيئة Vercel (تجنب تكرار فتح التطبيق) ✨
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 const db = initializeFirestore(app, { experimentalForceLongPolling: true });
 
-// ⏱️ زيادة الوقت إلى 30 ثانية لتجربة مستخدم أفضل وأكثر استقراراً
 const TIME_LIMIT_SECONDS = 30;
 
 // ==========================================
@@ -232,7 +232,6 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
     return sendTgMessage(chatId, endMsg, getKeyboard(isOwner, isAdmin));
   }
 
-  // الترتيب التصاعدي حسب الإكسل
   availableQ.sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
 
   const selectedItem = availableQ[0];
@@ -523,13 +522,12 @@ async function handleCallbackQuery(callbackQuery) {
     return askQuestion(chatId, activeCat, null, callbackId, isOwner, isAdmin);
   }
 
-  // ✨ المعالجة الجذرية لخلل الأزرار واختفاء الاستجابة ✨
+  // ✨ المعالجة المتسلسلة والمستقرة للإجابات (بدون Transaction لتناسب Vercel) ✨
   if (data.startsWith("c_") || data.startsWith("w_")) {
     const parts = data.split('_');
     const isCorrect = parts[0] === 'c';
     const qId = parts[1];
     
-    // الحل الجذري لمشكلة قراءة الوقت الخطأ
     let timestamp, isGold;
     if (isCorrect) {
         timestamp = parseInt(parts[2]);
@@ -544,54 +542,53 @@ async function handleCallbackQuery(callbackQuery) {
     let alertMsg = "";
 
     try {
-      await runTransaction(db, async (transaction) => {
-        const chatSnap = await transaction.get(chatRef);
-        const uSnap = (chatId === userId) ? chatSnap : await transaction.get(userRef);
-        
-        let chatData = chatSnap.exists() ? chatSnap.data() : { answered: [] };
-        let uData = uSnap.exists() ? uSnap.data() : { score: 0, streak: 0, name: userName, category_plays: {} };
-        const activeCat = chatSnap.exists() ? (chatSnap.data().active_category || 'عام') : 'عام';
+      // 1. القراءة المباشرة
+      const chatSnap = await getDoc(chatRef);
+      const uSnap = (chatId === userId) ? chatSnap : await getDoc(userRef);
+      
+      let chatData = chatSnap.exists() ? chatSnap.data() : { answered: [] };
+      let uData = uSnap.exists() ? uSnap.data() : { score: 0, streak: 0, name: userName, category_plays: {} };
+      const activeCat = chatSnap.exists() ? (chatSnap.data().active_category || 'عام') : 'عام';
 
-        const currentTime = Date.now();
-        const timeDiffSeconds = (currentTime - timestamp) / 1000;
-        
-        if (timeDiffSeconds > TIME_LIMIT_SECONDS) throw new Error("TIMEOUT");
-        if ((chatData.answered || []).includes(qId)) throw new Error("ALREADY_ANSWERED");
+      const currentTime = Date.now();
+      const timeDiffSeconds = (currentTime - timestamp) / 1000;
+      
+      if (timeDiffSeconds > TIME_LIMIT_SECONDS) throw new Error("TIMEOUT");
+      if ((chatData.answered || []).includes(qId)) throw new Error("ALREADY_ANSWERED");
 
-        let earnedPoints = 0;
-        let currentStreak = uData.streak || 0;
-        let categoryPlays = uData.category_plays || {};
-        
-        categoryPlays[activeCat] = (categoryPlays[activeCat] || 0) + 1;
+      let earnedPoints = 0;
+      let currentStreak = uData.streak || 0;
+      let categoryPlays = uData.category_plays || {};
+      
+      categoryPlays[activeCat] = (categoryPlays[activeCat] || 0) + 1;
 
-        if (isCorrect) {
-            earnedPoints = 10;
-            let msgParts = [`✅ إجابة صحيحة! (+10)`];
-            msgParts.push(`⏱️ استغرقت: ${timeDiffSeconds.toFixed(1)} ثانية`);
-            if (timeDiffSeconds <= 5) { earnedPoints += 5; msgParts.push("⚡ سرعة خارقة (+5)"); }
-            currentStreak += 1;
-            if (currentStreak >= 3) { earnedPoints += 5; msgParts.push(`🔥 سلسلة ${currentStreak} إجابات (+5)`); }
-            if (isGold) { earnedPoints *= 2; msgParts.push("🌟 ضربة ذهبية! (النقاط x2)"); }
-            alertMsg = msgParts.join("\n") + `\n\nالمجموع: +${earnedPoints} نقطة!`;
-        } else {
-            currentStreak = 0;
-            alertMsg = `❌ إجابة خاطئة!\n⏱️ استغرقت: ${timeDiffSeconds.toFixed(1)} ثانية\nانكسرت سلسلة انتصاراتك!`;
-        }
+      if (isCorrect) {
+          earnedPoints = 10;
+          let msgParts = [`✅ إجابة صحيحة! (+10)`];
+          msgParts.push(`⏱️ استغرقت: ${timeDiffSeconds.toFixed(1)} ثانية`);
+          if (timeDiffSeconds <= 5) { earnedPoints += 5; msgParts.push("⚡ سرعة خارقة (+5)"); }
+          currentStreak += 1;
+          if (currentStreak >= 3) { earnedPoints += 5; msgParts.push(`🔥 سلسلة ${currentStreak} إجابات (+5)`); }
+          if (isGold) { earnedPoints *= 2; msgParts.push("🌟 ضربة ذهبية! (النقاط x2)"); }
+          alertMsg = msgParts.join("\n") + `\n\nالمجموع: +${earnedPoints} نقطة!`;
+      } else {
+          currentStreak = 0;
+          alertMsg = `❌ إجابة خاطئة!\n⏱️ استغرقت: ${timeDiffSeconds.toFixed(1)} ثانية\nانكسرت سلسلة انتصاراتك!`;
+      }
 
-        let updatedChatData = { answered: [...(chatData.answered || []), qId] };
-        let updatedUData = { score: (uData.score || 0) + earnedPoints, streak: currentStreak, name: userName, category_plays: categoryPlays };
+      let updatedChatData = { answered: [...(chatData.answered || []), qId] };
+      let updatedUData = { score: (uData.score || 0) + earnedPoints, streak: currentStreak, name: userName, category_plays: categoryPlays };
 
-        if (chatId === userId) {
-            transaction.set(userRef, { ...updatedChatData, ...updatedUData }, { merge: true });
-        } else {
-            transaction.set(chatRef, updatedChatData, { merge: true });
-            transaction.set(userRef, updatedUData, { merge: true });
-        }
-      });
+      // 2. الكتابة المباشرة (مقاومة لانقطاع Vercel)
+      if (chatId === userId) {
+          await setDoc(userRef, { ...updatedChatData, ...updatedUData }, { merge: true });
+      } else {
+          await setDoc(chatRef, updatedChatData, { merge: true });
+          await setDoc(userRef, updatedUData, { merge: true });
+      }
 
       await answerTgCallback(callbackId, alertMsg);
       
-      // تأمين الخوارزمية ضد أي انهيار برمجي
       const newKeyboard = originalKeyboard.map(row => row.map(btn => ({
         text: (btn.callback_data && btn.callback_data.startsWith('c_')) ? "✅ " + btn.text : (btn.callback_data === data ? "❌ " + btn.text : btn.text),
         callback_data: "ignore"
@@ -600,7 +597,7 @@ async function handleCallbackQuery(callbackQuery) {
       await editTgMessage(chatId, messageId, null, { inline_keyboard: newKeyboard });
 
     } catch (err) {
-      console.error("Answer error:", err); // مفيد لاكتشاف المشاكل مستقبلاً في Vercel
+      console.error("Error updating score:", err); 
       if (err.message === "TIMEOUT") {
         await answerTgCallback(callbackId, `⏳ انتهى الوقت!`);
         const timeoutKeyboard = originalKeyboard.map(row => row.map(b => ({ text: "⏳ " + b.text, callback_data: "ignore" })));
@@ -609,8 +606,8 @@ async function handleCallbackQuery(callbackQuery) {
       } else if (err.message === "ALREADY_ANSWERED") {
         await answerTgCallback(callbackId, "⚠️ لقد تم الإجابة على هذا السؤال بالفعل.");
       } else {
-        // ✨ هذا السطر يمنع "عدم الاستجابة" لأي سبب برمجي طارئ مستقبلاً
-        await answerTgCallback(callbackId, "⚠️ عذراً، حدث خطأ تقني أثناء تسجيل إجابتك.");
+        // ✨ الكاشف السحري للأخطاء: سيعرض لك سبب العطل البرمجي إن حدث!
+        await answerTgCallback(callbackId, `⚠️ خطأ: ${err.message}`);
       }
     }
   }
@@ -740,7 +737,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. تم سد ثغرة توقف الأزرار نهائياً وزيادة الأمان!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. تم تغيير نظام المعاملات ليتناسب تماماً مع استضافة Vercel!');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
