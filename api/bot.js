@@ -25,7 +25,8 @@ const USER_KEYBOARD = {
   keyboard: [
     [{ text: "🎮 سؤال جديد" }, { text: "🗂️ تغيير القسم" }],
     [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
-    [{ text: "⭐ المفضلة" }, { text: "🚀 ابدأ من جديد" }]
+    [{ text: "⭐ المفضلة" }, { text: "📚 المكتبة" }],
+    [{ text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -33,11 +34,13 @@ const USER_KEYBOARD = {
 const ADMIN_KEYBOARD = {
   keyboard: [
     [{ text: "🎮 سؤال جديد" }, { text: "🧠 توليد أسئلة (AI)" }],
-    [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
-    [{ text: "👥 تقرير المتسابقين" }, { text: "📢 إرسال للمجموعة" }],
-    [{ text: "📈 إحصائيات التفاعل" }, { text: "🔗 ربط بمجموعة" }],
+    [{ text: "📥 استيراد إكسل" }, { text: "📚 إضافة كتاب (مباشر)" }],
+    [{ text: "📤 تصدير إكسل" }, { text: "📥 رفع مكتبة الكتب" }],
+    [{ text: "📢 إرسال للمجموعة" }, { text: "📈 إحصائيات التفاعل" }],
     [{ text: "🏆 لوحة الشرف" }, { text: "🗂️ تغيير القسم" }],
-    [{ text: "⭐ المفضلة" }, { text: "🚀 ابدأ من جديد" }]
+    [{ text: "⭐ المفضلة" }, { text: "📚 المكتبة" }],
+    [{ text: "👥 تقرير المتسابقين" }, { text: "🔗 ربط بمجموعة" }],
+    [{ text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -45,12 +48,14 @@ const ADMIN_KEYBOARD = {
 const OWNER_KEYBOARD = {
   keyboard: [
     [{ text: "🎮 سؤال جديد" }, { text: "🧠 توليد أسئلة (AI)" }],
-    [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
-    [{ text: "👥 تقرير المتسابقين" }, { text: "⚙️ إدارة المشرفين" }],
+    [{ text: "📥 استيراد إكسل" }, { text: "📚 إضافة كتاب (مباشر)" }],
+    [{ text: "📤 تصدير إكسل" }, { text: "📥 رفع مكتبة الكتب" }],
     [{ text: "📢 إرسال للمجموعة" }, { text: "📈 إحصائيات التفاعل" }],
-    [{ text: "🏆 لوحة الشرف" }, { text: "🔗 ربط بمجموعة" }],
-    [{ text: "📊 رصيدي الحالي" }, { text: "🗂️ تغيير القسم" }],
-    [{ text: "⭐ المفضلة" }, { text: "🚀 ابدأ من جديد" }]
+    [{ text: "⚙️ إدارة المشرفين" }, { text: "🔗 ربط بمجموعة" }],
+    [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
+    [{ text: "⭐ المفضلة" }, { text: "📚 المكتبة" }],
+    [{ text: "👥 تقرير المتسابقين" }, { text: "🗂️ تغيير القسم" }],
+    [{ text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -94,7 +99,6 @@ function buildDynamicKeyboard(buttonsArray) {
 
   for (let btn of buttonsArray) {
     const textLen = btn.text.length;
-
     if (textLen > 16) {
       if (currentRow.length > 0) { 
         inline_keyboard.push(currentRow); 
@@ -131,6 +135,11 @@ async function sendTgDocument(chatId, fileBuffer, fileName, caption) {
   await fetch(`https://api.telegram.org/bot${getToken()}/sendDocument`, { method: 'POST', body: formData });
 }
 
+async function sendTgDocumentById(chatId, fileId, caption) {
+  const payload = { chat_id: chatId, document: fileId, caption: caption, parse_mode: "Markdown" };
+  await fetch(`https://api.telegram.org/bot${getToken()}/sendDocument`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+}
+
 async function answerTgCallback(callbackId, text) {
   await fetch(`https://api.telegram.org/bot${getToken()}/answerCallbackQuery`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -144,6 +153,14 @@ async function editTgMessage(chatId, messageId, text = null, replyMarkup = null)
   if (replyMarkup) payload.reply_markup = replyMarkup;
   const endpoint = text ? 'editMessageText' : 'editMessageReplyMarkup';
   await fetch(`https://api.telegram.org/bot${getToken()}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+}
+
+// ✨ دالة جديدة لحذف الرسالة أثناء الانتقال الذكي ✨
+async function deleteTgMessage(chatId, messageId) {
+  await fetch(`https://api.telegram.org/bot${getToken()}/deleteMessage`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId })
+  });
 }
 
 // ==========================================
@@ -175,6 +192,65 @@ ${text.substring(0, 3000)}`;
   rawText = rawText.replace(/```json/gi, '').replace(/```/gi, '').trim(); 
   
   return JSON.parse(rawText);
+}
+
+// ==========================================
+// 📚 محرك المكتبة (Books Engine)
+// ==========================================
+async function processBooksExcelImport(document, chatId, isOwner, isAdmin) {
+  const fileName = document.file_name;
+  if (!fileName.endsWith('.xlsx')) return sendTgMessage(chatId, "❌ يرجى إرسال ملف بصيغة `.xlsx` فقط.", getKeyboard(isOwner, isAdmin));
+  await sendTgMessage(chatId, "🔄 جاري معالجة بيانات المكتبة...");
+  
+  const fileRes = await fetch(`https://api.telegram.org/bot${getToken()}/getFile?file_id=${document.file_id}`);
+  const fileJson = await fileRes.json();
+
+  if (fileJson.ok) {
+    const arrayBuffer = await (await fetch(`https://api.telegram.org/file/bot${getToken()}/${fileJson.result.file_path}`)).arrayBuffer();
+    const rows = XLSX.utils.sheet_to_json(XLSX.read(arrayBuffer, { type: 'buffer' }).Sheets[XLSX.read(arrayBuffer, { type: 'buffer' }).SheetNames[0]], { header: 1, defval: "" });
+    let bulkBooks = [];
+
+    for (let i = 1; i < rows.length; i++) {
+      if (!String(rows[i][0]).trim() || !String(rows[i][2]).trim()) continue;
+      bulkBooks.push({ 
+          title: String(rows[i][0]).trim(), 
+          date: String(rows[i][1]).trim() || "غير محدد", 
+          link: String(rows[i][2]).trim(),
+          cover_link: String(rows[i][3] || '').trim() // ✨ قراءة العمود الرابع لصورة الغلاف ✨
+      });
+    }
+
+    if (bulkBooks.length > 0) {
+      const bSnap = await getDocs(collection(db, "books"));
+      let deleteBatch = writeBatch(db); 
+      bSnap.forEach(d => deleteBatch.delete(d.ref)); 
+      if (bSnap.size > 0) await deleteBatch.commit();
+
+      let addBatch = writeBatch(db); 
+      bulkBooks.forEach(b => addBatch.set(doc(collection(db, "books")), b)); 
+      await addBatch.commit();
+      
+      await sendTgMessage(chatId, `🎉 *تم التحديث!*\nتم إدراج: ${bulkBooks.length} كتاب إلكتروني بنجاح في المكتبة.`, getKeyboard(isOwner, isAdmin));
+    } else {
+      await sendTgMessage(chatId, "⚠️ لم يتم العثور على بيانات كتب صالحة في الملف.\nتأكد أن العمود الأول يحتوي على الاسم، والثالث للرابط، والرابع للغلاف (اختياري).", getKeyboard(isOwner, isAdmin));
+    }
+  }
+}
+
+async function showBooksLibrary(chatId) {
+  const bSnap = await getDocs(collection(db, "books"));
+  if (bSnap.empty) {
+      return sendTgMessage(chatId, "📚 *المكتبة فارغة حالياً.*\nيرجى انتظار الإدارة لرفع الكتب.");
+  }
+
+  let bookButtons = [];
+  bSnap.forEach(d => {
+      bookButtons.push({ text: `📖 ${d.data().title}`, callback_data: `book_${d.id}` });
+  });
+
+  let inline_keyboard = buildDynamicKeyboard(bookButtons); 
+  const text = "📚 *المكتبة:*\n\nاختر الكتاب الذي تود قراءته أو تحميله:";
+  return sendTgMessage(chatId, text, { inline_keyboard });
 }
 
 // ==========================================
@@ -312,7 +388,7 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
 async function processExcelImport(document, chatId, isOwner, isAdmin) {
   const fileName = document.file_name;
   if (!fileName.endsWith('.xlsx')) return sendTgMessage(chatId, "❌ يرجى إرسال ملف بصيغة `.xlsx` فقط.", getKeyboard(isOwner, isAdmin));
-  await sendTgMessage(chatId, "🔄 جاري معالجة البيانات...");
+  await sendTgMessage(chatId, "🔄 جاري معالجة بيانات الأسئلة...");
   const fileRes = await fetch(`https://api.telegram.org/bot${getToken()}/getFile?file_id=${document.file_id}`);
   const fileJson = await fileRes.json();
 
@@ -434,6 +510,88 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (data === "ignore") return answerTgCallback(callbackId, "⚠️ لقد قمت بهذا الإجراء مسبقاً.");
   if (data === "back_to_maincat") return showCategories(chatId, isOwner, isAdmin, messageId);
+
+  // ✨ معالجة التفاعل مع زر الكتاب وإظهار الغلاف ✨
+  if (data.startsWith("book_")) {
+    const bookId = data.replace("book_", "");
+    const bookDoc = await getDoc(doc(db, "books", bookId));
+    if (!bookDoc.exists()) return answerTgCallback(callbackId, "⚠️ عذراً، لم يعد هذا الكتاب موجوداً.");
+    
+    const bData = bookDoc.data();
+    const text = `📖 *اسم الكتاب:* ${bData.title}\n📅 *تاريخ الإضافة:* ${bData.date}\n\n📥 لتحميل أو قراءة الكتاب، اضغط على زر التحميل بالأسفل 👇`;
+    
+    let inline_keyboard = [];
+    
+    if (bData.file_id) {
+        inline_keyboard.push([{ text: "📥 تحميل الكتاب داخل تيليجرام", callback_data: `dl_book_${bookId}` }]);
+    } else if (bData.link) {
+        let bookLink = String(bData.link);
+        if (!bookLink.startsWith('http')) bookLink = 'https://' + bookLink;
+        inline_keyboard.push([{ text: "🔗 فتح الرابط الخارجي", url: bookLink }]);
+    }
+
+    if (isAdmin) {
+        inline_keyboard.push([{ text: "❌ حذف هذا الكتاب", callback_data: `del_book_${bookId}` }]);
+    }
+
+    inline_keyboard.push([{ text: "🔙 العودة للمكتبة", callback_data: "back_to_books" }]);
+    
+    // انتقال ذكي: مسح رسالة القائمة الحالية
+    await deleteTgMessage(chatId, messageId);
+
+    // التحقق من وجود غلاف (سواء من الإكسل أو من الرفع المباشر)
+    const photoUrl = bData.thumb_id || bData.cover_link;
+
+    if (photoUrl) {
+        await fetch(`https://api.telegram.org/bot${getToken()}/sendPhoto`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: chatId,
+                photo: photoUrl,
+                caption: text,
+                parse_mode: "Markdown",
+                reply_markup: { inline_keyboard }
+            })
+        });
+    } else {
+        // إذا لم يكن هناك غلاف، نرسل الرسالة كنص عادي
+        await sendTgMessage(chatId, text, { inline_keyboard });
+    }
+    return;
+  }
+
+  // ✨ معالجة تحميل الكتاب ✨
+  if (data.startsWith("dl_book_")) {
+    const bookId = data.replace("dl_book_", "");
+    const bookDoc = await getDoc(doc(db, "books", bookId));
+    if (!bookDoc.exists()) return answerTgCallback(callbackId, "⚠️ عذراً، لم يعد هذا الكتاب موجوداً.");
+    
+    const bData = bookDoc.data();
+    await answerTgCallback(callbackId, "⏳ جاري إرسال الكتاب إليك، يرجى الانتظار...");
+    await sendTgDocumentById(chatId, bData.file_id, `📖 *${bData.title}*`);
+    return;
+  }
+
+  // ✨ معالجة حذف الكتاب للمدير ✨
+  if (data.startsWith("del_book_")) {
+    if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
+    const bookId = data.replace("del_book_", "");
+    
+    let deleteBatch = writeBatch(db);
+    deleteBatch.delete(doc(db, "books", bookId));
+    await deleteBatch.commit();
+    
+    await answerTgCallback(callbackId, "✅ تم حذف الكتاب بنجاح!");
+    await deleteTgMessage(chatId, messageId);
+    return showBooksLibrary(chatId);
+  }
+
+  // ✨ زر الرجوع لقائمة الكتب (يمسح صورة الغلاف) ✨
+  if (data === "back_to_books") {
+    await deleteTgMessage(chatId, messageId);
+    return showBooksLibrary(chatId);
+  }
 
   if (data.startsWith("fav_")) {
     const qId = data.replace("fav_", "");
@@ -710,14 +868,19 @@ async function handleMessage(message) {
   const chatSnap = await getDoc(chatRef);
   let currentState = userSnap.exists() ? userSnap.data().state : null;
   
-  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل', '🔗 ربط بمجموعة', '⭐ المفضلة', '🧠 توليد أسئلة (AI)'];
+  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '📥 رفع مكتبة الكتب', '📚 إضافة كتاب (مباشر)', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل', '🔗 ربط بمجموعة', '⭐ المفضلة', '📚 المكتبة', '🧠 توليد أسئلة (AI)'];
   
   if (knownCommands.includes(text) && currentState) {
     await setDoc(userRef, { state: null }, { merge: true });
     currentState = null; 
   }
 
-  // ✨ التعديل الجذري: توليد ملف إكسل لأسئلة الذكاء الاصطناعي بدلاً من إضافتها مباشرة ✨
+  // ✨ معالجة تصفح المكتبة ✨
+  if (text === '📚 المكتبة') {
+    return showBooksLibrary(chatId);
+  }
+
+  // ✨ معالجة الذكاء الاصطناعي ✨
   if (isAdmin && currentState === "WAITING_FOR_AI_TEXT") {
       await setDoc(userRef, { state: null }, { merge: true });
       
@@ -750,9 +913,7 @@ async function handleMessage(message) {
 
         await sendTgDocument(chatId, fileBuffer, 'AI_Generated_Questions.xlsx', '🤖 *أسئلة الذكاء الاصطناعي جاهزة للمراجعة!*\n\nقم بفتح هذا الملف ومراجعته (أو تعديله)، وإذا كان مناسباً، قم برفعه للبوت باستخدام زر (📥 استيراد إكسل).');
         return;
-        
       } catch (error) {
-        console.error("AI Error:", error);
         if(error.message === "API_KEY_MISSING") return sendTgMessage(chatId, "⚠️ خطأ: لم تقم بإضافة مفتاح `GEMINI_API_KEY` في إعدادات Vercel الخاصة بك.", currentKeyboard);
         return sendTgMessage(chatId, "⚠️ عذراً، لم يتمكن الذكاء الاصطناعي من استخراج الأسئلة. تأكد من إرسال نص واضح ومفهوم.", currentKeyboard);
       }
@@ -763,6 +924,7 @@ async function handleMessage(message) {
       return sendTgMessage(chatId, "🧠 *مولد الأسئلة السحري (مع المراجعة):*\n\nالرجاء إرسال **النص** (مقال، فقرة من كتاب، أو معلومات عامة).\n\nسأقوم بقراءته واستخراج أسئلة دقيقة منه وإرسالها لك في **ملف إكسل** لتراجعها قبل اعتمادها!\n\n💡 _(لإلغاء العملية اضغط على أي زر آخر)_", currentKeyboard);
   }
 
+  // ✨ معالجة المفضلة ✨
   if (text === '⭐ المفضلة') {
     const favs = userSnap.exists() ? (userSnap.data().favorites || []) : [];
     if (favs.length === 0) {
@@ -822,14 +984,53 @@ async function handleMessage(message) {
     return sendTgMessage(chatId, welcomeText, currentKeyboard);
   }
 
+  // ✨ معالجة إضافة كتاب مباشرة كملف ✨
+  if (document && isAdmin && currentState === "WAITING_FOR_BOOK_FILE") {
+    await setDoc(userRef, { state: null }, { merge: true });
+    
+    let title = document.file_name || "كتاب بدون عنوان";
+    title = title.replace(/\.[^/.]+$/, ""); 
+    
+    const fileId = document.file_id;
+    // التقاط صورة الغلاف المصغرة إن وجدت
+    const thumbId = document.thumbnail ? document.thumbnail.file_id : (document.thumb ? document.thumb.file_id : null);
+    
+    const dateOptions = { year: 'numeric', month: 'long', day: 'numeric' };
+    const date = new Date().toLocaleDateString('ar-EG', dateOptions);
+
+    await setDoc(doc(collection(db, "books")), {
+        title: title,
+        date: date,
+        file_id: fileId,
+        thumb_id: thumbId
+    });
+
+    return sendTgMessage(chatId, `✅ *تم إضافة الكتاب للمكتبة بنجاح!*\n\n📖 *الاسم:* ${title}\n📅 *التاريخ:* ${date}\n\n💡 _(يمكن للمستخدمين الآن الدخول للمكتبة وتحميله، وسيظهر الغلاف إذا توفر)_`, currentKeyboard);
+  }
+
+  if (document && isAdmin && currentState === "WAITING_FOR_BOOKS_EXCEL") {
+    await setDoc(userRef, { state: null }, { merge: true });
+    return processBooksExcelImport(document, chatId, isOwner, isAdmin);
+  }
+
   if (document && isAdmin && currentState === "WAITING_FOR_EXCEL") {
     await setDoc(userRef, { state: null }, { merge: true });
     return processExcelImport(document, chatId, isOwner, isAdmin);
   }
 
+  if (isAdmin && (text === '📚 إضافة كتاب (مباشر)')) {
+    await setDoc(userRef, { state: "WAITING_FOR_BOOK_FILE" }, { merge: true });
+    return sendTgMessage(chatId, "📤 *أرسل الآن ملف الكتاب (PDF, DOCX, إلخ)...*\n\nسيقوم البوت تلقائياً بأخذ اسم الملف كعنوان للكتاب وحفظه، وسيقوم بالتقاط الغلاف تلقائياً إن أمكن!\n\n💡 _(لإلغاء العملية اضغط على أي زر)_", currentKeyboard);
+  }
+
+  if (isAdmin && (text === '📥 رفع مكتبة الكتب')) {
+    await setDoc(userRef, { state: "WAITING_FOR_BOOKS_EXCEL" }, { merge: true });
+    return sendTgMessage(chatId, "📥 **أرسل الآن ملف الإكسل الخاص بالكتب (.xlsx)**.\n\n⚠️ **هام للترتيب:**\nالعمود الأول: (اسم الكتاب)\nالعمود الثاني: (التاريخ)\nالعمود الثالث: (الرابط)\nالعمود الرابع: (رابط الغلاف - اختياري)\n\n💡 _(لإلغاء العملية اضغط على أي زر)_", currentKeyboard);
+  }
+
   if (isAdmin && (text === '📥 استيراد إكسل' || text === '/import')) {
     await setDoc(userRef, { state: "WAITING_FOR_EXCEL" }, { merge: true });
-    return sendTgMessage(chatId, "📥 **أرسل الآن ملف الإكسل (.xlsx)**.\n💡 (لإلغاء العملية اضغط على أي زر)", currentKeyboard);
+    return sendTgMessage(chatId, "📥 **أرسل الآن ملف الإكسل الخاص بالأسئلة (.xlsx)**.\n💡 _(لإلغاء العملية اضغط على أي زر)_", currentKeyboard);
   }
 
   if (isAdmin && (text === '📤 تصدير إكسل' || text === '/export')) return exportQuestions(chatId);
@@ -862,7 +1063,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ تم التحديث بنجاح! البوت الآن يستخرج أسئلة الذكاء الاصطناعي في ملف إكسل للمراجعة أولاً.');
+  if (req.method !== 'POST') return res.status(200).send('✅ تم التحديث بنجاح! ميزة عرض أغلفة الكتب تعمل الآن بأناقة.');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
