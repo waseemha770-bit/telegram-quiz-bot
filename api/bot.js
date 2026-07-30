@@ -21,11 +21,12 @@ const TIME_LIMIT_SECONDS = 30;
 const getAdminId = () => process.env.ADMIN_ID;
 const getToken = () => process.env.TELEGRAM_TOKEN;
 
+// ✨ تم إضافة زر المفضلة لجميع القوائم ✨
 const USER_KEYBOARD = {
   keyboard: [
     [{ text: "🎮 سؤال جديد" }, { text: "🗂️ تغيير القسم" }],
     [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
-    [{ text: "🚀 ابدأ من جديد" }]
+    [{ text: "⭐ المفضلة" }, { text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -37,7 +38,7 @@ const ADMIN_KEYBOARD = {
     [{ text: "👥 تقرير المتسابقين" }, { text: "📢 إرسال للمجموعة" }],
     [{ text: "📈 إحصائيات التفاعل" }, { text: "🔗 ربط بمجموعة" }],
     [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
-    [{ text: "🚀 ابدأ من جديد" }]
+    [{ text: "⭐ المفضلة" }, { text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -49,7 +50,8 @@ const OWNER_KEYBOARD = {
     [{ text: "👥 تقرير المتسابقين" }, { text: "⚙️ إدارة المشرفين" }],
     [{ text: "📢 إرسال للمجموعة" }, { text: "📈 إحصائيات التفاعل" }],
     [{ text: "🏆 لوحة الشرف" }, { text: "🔗 ربط بمجموعة" }],
-    [{ text: "📊 رصيدي الحالي" }, { text: "🚀 ابدأ من جديد" }]
+    [{ text: "📊 رصيدي الحالي" }, { text: "⭐ المفضلة" }],
+    [{ text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -272,8 +274,7 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
 
   let inline_keyboard = buildDynamicKeyboard(rawButtons); 
 
-  // 🔥 تسريع حفظ القسم النشط
-  setDoc(chatRef, { active_category: category }, { merge: true }); // بدون await لتسريع الاستجابة
+  setDoc(chatRef, { active_category: category }, { merge: true });
   
   let qText = `📁 *${displayCat}*\n\n`;
   if (isGold === 1) qText += `🌟 *سؤال ذهبي! نقاط مضاعفة!* 🌟\n\n`;
@@ -419,10 +420,43 @@ async function handleCallbackQuery(callbackQuery) {
   const isOwner = (userId === getAdminId());
   const isAdmin = isOwner || adminsArray.includes(userId);
 
-  if (data === "ignore") return answerTgCallback(callbackId, "⚠️ لا يمكنك الضغط هنا مجدداً.");
+  if (data === "ignore") return answerTgCallback(callbackId, "⚠️ لقد قمت بهذا الإجراء مسبقاً.");
 
   if (data === "back_to_maincat") {
     return showCategories(chatId, isOwner, isAdmin, messageId);
+  }
+
+  // ✨ معالجة إضافة السؤال للمفضلة ✨
+  if (data.startsWith("fav_")) {
+    const qId = data.replace("fav_", "");
+    const userRef = doc(db, "users", userId);
+    
+    try {
+        const uSnap = await getDoc(userRef);
+        let favs = uSnap.exists() ? (uSnap.data().favorites || []) : [];
+        
+        if (!favs.includes(qId)) {
+            favs.push(qId);
+            // حفظ بدون إيقاف الواجهة لتسريع الاستجابة
+            setDoc(userRef, { favorites: favs }, { merge: true });
+            
+            // تغيير نص الزر إلى (محفوظ) ليعرف المستخدم أنه تمت إضافته
+            const updatedKeyboard = originalKeyboard.map(row => row.map(btn => {
+                if (btn.callback_data === data) return { text: "⭐ محفوظ", callback_data: "ignore" };
+                return btn;
+            }));
+            
+            await Promise.all([
+                answerTgCallback(callbackId, "✅ تم حفظ السؤال في مفضلتك!"),
+                editTgMessage(chatId, messageId, null, { inline_keyboard: updatedKeyboard })
+            ]);
+            return;
+        } else {
+            return answerTgCallback(callbackId, "⚠️ هذا السؤال محفوظ مسبقاً في مفضلتك.");
+        }
+    } catch(err) {
+        return answerTgCallback(callbackId, "حدث خطأ أثناء الحفظ.");
+    }
   }
 
   if (data.startsWith("mcat_")) {
@@ -542,15 +576,15 @@ async function handleCallbackQuery(callbackQuery) {
   }
 
   if (data === "next_q") {
-    const strippedKeyboard = originalKeyboard.filter(row => !row.some(btn => btn.callback_data === "next_q"));
-    // 🔥 تسريع: لا ننتظر تحديث الرسالة القديمة لبدء السؤال الجديد
+    // إزالة أزرار (التالي) و (المفضلة) من الرسالة القديمة حتى لا تشوه الشاشة
+    const strippedKeyboard = originalKeyboard.filter(row => !row.some(btn => btn.callback_data === "next_q" || btn.callback_data.startsWith("fav_")));
     editTgMessage(chatId, messageId, null, { inline_keyboard: strippedKeyboard });
+    
     const chatSnap = await getDoc(doc(db, "users", chatId));
     const activeCat = chatSnap.exists() ? (chatSnap.data().active_category || 'عام') : 'عام';
     return askQuestion(chatId, activeCat, null, callbackId, isOwner, isAdmin);
   }
 
-  // ✨ قلب النظام لمعالجة متوازية (Parallel) فائقة السرعة ✨
   if (data.startsWith("c_") || data.startsWith("w_")) {
     const parts = data.split('_');
     const isCorrect = parts[0] === 'c';
@@ -609,12 +643,16 @@ async function handleCallbackQuery(callbackQuery) {
         text: (btn.callback_data && btn.callback_data.startsWith('c_')) ? "✅ " + btn.text : (btn.callback_data === data ? "❌ " + btn.text : btn.text),
         callback_data: "ignore"
       })));
-      newKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]);
+      
+      // ✨ إضافة زر المفضلة بجوار زر التالي بعد الإجابة ✨
+      newKeyboard.push([
+        { text: "⭐ حفظ السؤال", callback_data: `fav_${qId}` },
+        { text: "⏭️ السؤال التالي", callback_data: "next_q" }
+      ]);
 
-      // ⚡⚡ التحديث الصاروخي: تجميع كل الأوامر وإطلاقها في نفس اللحظة ⚡⚡
       let promises = [];
-      promises.push(answerTgCallback(callbackId, alertMsg)); // يرسل الرد الفوري للمستخدم
-      promises.push(editTgMessage(chatId, messageId, null, { inline_keyboard: newKeyboard })); // يغير شكل الزر
+      promises.push(answerTgCallback(callbackId, alertMsg)); 
+      promises.push(editTgMessage(chatId, messageId, null, { inline_keyboard: newKeyboard })); 
       
       if (chatId === userId) {
           promises.push(setDoc(userRef, { ...updatedChatData, ...updatedUData }, { merge: true }));
@@ -623,7 +661,6 @@ async function handleCallbackQuery(callbackQuery) {
           promises.push(setDoc(userRef, updatedUData, { merge: true }));
       }
 
-      // تشغيل الجميع معاً
       await Promise.all(promises);
 
     } catch (err) {
@@ -689,10 +726,38 @@ async function handleMessage(message) {
   const chatSnap = await getDoc(chatRef);
 
   let currentState = userSnap.exists() ? userSnap.data().state : null;
-  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل', '🔗 ربط بمجموعة'];
+  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل', '🔗 ربط بمجموعة', '⭐ المفضلة'];
+  
   if (knownCommands.includes(text) && currentState) {
     await setDoc(userRef, { state: null }, { merge: true });
     currentState = null; 
+  }
+
+  // ✨ معالجة عرض قائمة المفضلة ✨
+  if (text === '⭐ المفضلة') {
+    const favs = userSnap.exists() ? (userSnap.data().favorites || []) : [];
+    if (favs.length === 0) {
+        return sendTgMessage(chatId, "⭐ *مفضلتك فارغة!*\n\nلم تقم بحفظ أي أسئلة بعد.\nعند الإجابة على أي سؤال، اضغط على زر (⭐ حفظ السؤال) ليظهر هنا للرجوع إليه لاحقاً.", currentKeyboard);
+    }
+    
+    await sendTgMessage(chatId, "⏳ جاري جلب أسئلتك المفضلة...");
+    
+    const qSnap = await getDocs(collection(db, "questions"));
+    let favText = "⭐ *قائمة أسئلتك المفضلة:*\n\n";
+    let count = 1;
+    
+    qSnap.forEach(d => {
+        if (favs.includes(d.id)) {
+            favText += `*${count}.* ${d.data().question}\n✅ الإجابة: _${d.data().correct}_\n\n`;
+            count++;
+        }
+    });
+
+    if (favText.length > 4000) {
+        favText = favText.substring(0, 4000) + "\n... (تم الاكتفاء بعرض جزء من المفضلة لتجاوز الحد المسموح)";
+    }
+    
+    return sendTgMessage(chatId, favText, currentKeyboard);
   }
 
   if (isOwner && currentState === "WAITING_FOR_ADMIN_ADD") {
@@ -769,7 +834,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة صاروخية! تم تفعيل نظام Promise.all للاستجابة اللحظية.');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة! تم تفعيل ميزة المفضلة بنجاح.');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
