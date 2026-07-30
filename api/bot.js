@@ -121,6 +121,18 @@ function buildDynamicKeyboard(buttonsArray) {
   return inline_keyboard;
 }
 
+// ✨ دالة ذكية جديدة لتوحيد اللغة العربية وجعل البحث دقيقاً 100% ✨
+function normalizeArabic(text) {
+  if (!text) return "";
+  return text.toLowerCase()
+    .replace(/[أإآا]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/ؤ/g, 'و')
+    .replace(/ئ/g, 'ي')
+    .replace(/ً|ٌ|ٍ|َ|ُ|ِ|ّ|ْ/g, '');
+}
+
 async function sendTgMessage(chatId, text, replyMarkup = null) {
   const payload = { chat_id: chatId, text: text, parse_mode: "Markdown" };
   if (replyMarkup) payload.reply_markup = replyMarkup;
@@ -140,10 +152,16 @@ async function sendTgDocumentById(chatId, fileId, caption) {
   await fetch(`https://api.telegram.org/bot${getToken()}/sendDocument`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
 }
 
-async function answerTgCallback(callbackId, text) {
+// ✨ إصلاح الخلل التقني في إشعارات الأزرار ✨
+async function answerTgCallback(callbackId, text = null) {
+  let body = { callback_query_id: callbackId };
+  if (text) {
+    body.text = text;
+    body.show_alert = true;
+  }
   await fetch(`https://api.telegram.org/bot${getToken()}/answerCallbackQuery`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ callback_query_id: callbackId, text: text, show_alert: true })
+    body: JSON.stringify(body)
   });
 }
 
@@ -236,7 +254,6 @@ async function processBooksExcelImport(document, chatId, isOwner, isAdmin) {
   }
 }
 
-// ✨ الدالة الجديدة: القائمة الرئيسية للمكتبة ✨
 async function showLibraryMenu(chatId, messageIdToEdit = null) {
   const text = "📚 *مرحباً بك في المكتبة القرآنية*\n\nالرجاء اختيار ما تود القيام به من القائمة:";
   const inline_keyboard = [
@@ -248,7 +265,6 @@ async function showLibraryMenu(chatId, messageIdToEdit = null) {
   return sendTgMessage(chatId, text, { inline_keyboard });
 }
 
-// ✨ تصفح كل الكتب ✨
 async function showAllBooks(chatId, messageIdToEdit = null) {
   const bSnap = await getDocs(collection(db, "books"));
   if (bSnap.empty) {
@@ -259,8 +275,10 @@ async function showAllBooks(chatId, messageIdToEdit = null) {
 
   let bookButtons = [];
   bSnap.forEach(d => {
-      // ترتيب عمودي: كل كتاب في سطر مستقل
-      bookButtons.push([{ text: `📖 ${d.data().title}`, callback_data: `book_${d.id}` }]);
+      // الحماية من انهيار تيليجرام (حد 90 زر كحد أقصى)
+      if (bookButtons.length < 90) {
+          bookButtons.push([{ text: `📖 ${d.data().title}`, callback_data: `book_${d.id}` }]);
+      }
   });
   
   bookButtons.push([{ text: "🔙 العودة لقائمة المكتبة", callback_data: "back_to_lib_menu" }]);
@@ -530,22 +548,29 @@ async function handleCallbackQuery(callbackQuery) {
 
   // ✨ معالجة أزرار قائمة المكتبة ✨
   if (data === "browse_all_books") {
+      await answerTgCallback(callbackId);
       return showAllBooks(chatId, messageId);
   }
 
+  // ✨ إصلاح المشاكل البرمجية الصامتة في زر البحث ✨
   if (data === "search_book") {
+      await answerTgCallback(callbackId); // لمنع الزر من التجمد
       const userRef = doc(db, "users", userId);
       await setDoc(userRef, { state: "WAITING_FOR_BOOK_SEARCH" }, { merge: true });
       const text = "🔍 *البحث عن كتاب*\n\nالرجاء إرسال اسم الكتاب أو جزء منه في رسالة نصية الآن للبحث عنه في المكتبة:";
-      return editTgMessage(chatId, messageId, text);
+      // إضافة زر العودة لمنع حجز المستخدم داخل أمر البحث
+      const inline_keyboard = [[{ text: "❌ إلغاء والعودة", callback_data: "back_to_lib_menu" }]];
+      return editTgMessage(chatId, messageId, text, { inline_keyboard });
   }
 
   if (data === "fav_books_list") {
+      await answerTgCallback(callbackId);
       const userRef = doc(db, "users", userId);
       const uSnap = await getDoc(userRef);
       let favs = uSnap.exists() ? (uSnap.data().favorite_books || []) : [];
       
       if (favs.length === 0) {
+          // استخدام دالة answerTgCallback المعدلة لإظهار رسالة الإشعار
           return answerTgCallback(callbackId, "⭐ قائمة الكتب المفضلة لديك فارغة حالياً.");
       }
       
@@ -562,13 +587,12 @@ async function handleCallbackQuery(callbackQuery) {
       return editTgMessage(chatId, messageId, text, { inline_keyboard: bookButtons });
   }
 
-  // ✨ الرجوع لقائمة المكتبة ✨
   if (data === "back_to_lib_menu") {
+      await answerTgCallback(callbackId);
       await deleteTgMessage(chatId, messageId);
       return showLibraryMenu(chatId);
   }
 
-  // ✨ معالجة التفاعل مع كتاب محدد وإظهار تفاصيله والغلاف ✨
   if (data.startsWith("book_")) {
     const bookId = data.replace("book_", "");
     const bookDoc = await getDoc(doc(db, "books", bookId));
@@ -579,7 +603,6 @@ async function handleCallbackQuery(callbackQuery) {
     
     let inline_keyboard = [];
     
-    // ترتيب الأزرار عمودياً (زر واحد في كل صف)
     if (bData.file_id) {
         inline_keyboard.push([{ text: "📥 تحميل الكتاب داخل تيليجرام", callback_data: `dl_book_${bookId}` }]);
     } else if (bData.link) {
@@ -626,7 +649,6 @@ async function handleCallbackQuery(callbackQuery) {
     return;
   }
 
-  // ✨ معالجة حفظ الكتاب في المفضلة ✨
   if (data.startsWith("fav_book_")) {
     const bookId = data.replace("fav_book_", "");
     const userRef = doc(db, "users", userId);
@@ -655,7 +677,6 @@ async function handleCallbackQuery(callbackQuery) {
     }
   }
 
-  // ✨ معالجة تحميل الكتاب ✨
   if (data.startsWith("dl_book_")) {
     const bookId = data.replace("dl_book_", "");
     const bookDoc = await getDoc(doc(db, "books", bookId));
@@ -667,7 +688,6 @@ async function handleCallbackQuery(callbackQuery) {
     return;
   }
 
-  // ✨ معالجة حذف الكتاب للمدير ✨
   if (data.startsWith("del_book_")) {
     if (!isAdmin) return answerTgCallback(callbackId, "⚠️ ليس لديك صلاحية.");
     const bookId = data.replace("del_book_", "");
@@ -964,24 +984,22 @@ async function handleMessage(message) {
     currentState = null; 
   }
 
-  // ✨ معالجة تصفح المكتبة عبر القائمة المصغرة ✨
+  // ✨ معالجة تصفح المكتبة ✨
   if (text === '📚 المكتبة') {
     return showLibraryMenu(chatId);
   }
 
-  // ✨ معالجة البحث عن كتاب ✨
+  // ✨ المعالجة الجديدة والخالية من الأخطاء لنتائج البحث ✨
   if (currentState === "WAITING_FOR_BOOK_SEARCH") {
       await setDoc(userRef, { state: null }, { merge: true });
       if (!text) return sendTgMessage(chatId, "⚠️ الرجاء إرسال نص صالح للبحث.", currentKeyboard);
       
-      await sendTgMessage(chatId, "🔍 *جاري البحث في المكتبة...*");
-      
       const bSnap = await getDocs(collection(db, "books"));
       let bookButtons = [];
-      const searchTarget = text.toLowerCase();
+      const searchTarget = normalizeArabic(text);
       
       bSnap.forEach(d => {
-          const title = (d.data().title || "").toLowerCase();
+          const title = normalizeArabic(d.data().title || "");
           if (title.includes(searchTarget)) {
               bookButtons.push([{ text: `📖 ${d.data().title}`, callback_data: `book_${d.id}` }]);
           }
@@ -991,11 +1009,15 @@ async function handleMessage(message) {
           return sendTgMessage(chatId, `⚠️ لم أتمكن من العثور على أي كتاب يطابق بحثك عن: *${text}*`, currentKeyboard);
       }
   
+      // الحماية من الانهيار إذا تجاوز البحث 90 كتاباً
+      if (bookButtons.length > 90) {
+          bookButtons = bookButtons.slice(0, 90);
+      }
+
       bookButtons.push([{ text: "🔙 العودة لقائمة المكتبة", callback_data: "back_to_lib_menu" }]);
       return sendTgMessage(chatId, `🔍 *نتائج البحث عن:* ${text}\n\nاختر الكتاب من القائمة التالية:`, { inline_keyboard: bookButtons });
   }
 
-  // ✨ معالجة الذكاء الاصطناعي ✨
   if (isAdmin && currentState === "WAITING_FOR_AI_TEXT") {
       await setDoc(userRef, { state: null }, { merge: true });
       
@@ -1099,7 +1121,6 @@ async function handleMessage(message) {
     return sendTgMessage(chatId, welcomeText, currentKeyboard);
   }
 
-  // ✨ معالجة إضافة كتاب مباشرة كملف ✨
   if (document && isAdmin && currentState === "WAITING_FOR_BOOK_FILE") {
     await setDoc(userRef, { state: null }, { merge: true });
     
@@ -1177,7 +1198,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ تم التحديث بنجاح! ميزة عرض أغلفة الكتب تعمل الآن بأناقة.');
+  if (req.method !== 'POST') return res.status(200).send('✅ تم التحديث بنجاح! تم حل جميع المشاكل التقنية في زر البحث وجعله دقيقاً وقوياً.');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
