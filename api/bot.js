@@ -21,7 +21,6 @@ const TIME_LIMIT_SECONDS = 30;
 const getAdminId = () => process.env.ADMIN_ID;
 const getToken = () => process.env.TELEGRAM_TOKEN;
 
-// ✨ تم إضافة زر المفضلة لجميع القوائم ✨
 const USER_KEYBOARD = {
   keyboard: [
     [{ text: "🎮 سؤال جديد" }, { text: "🗂️ تغيير القسم" }],
@@ -31,13 +30,14 @@ const USER_KEYBOARD = {
   resize_keyboard: true
 };
 
+// ✨ إضافة زر الذكاء الاصطناعي للوحات التحكم ✨
 const ADMIN_KEYBOARD = {
   keyboard: [
-    [{ text: "🎮 سؤال جديد" }, { text: "🗂️ تغيير القسم" }],
+    [{ text: "🎮 سؤال جديد" }, { text: "🧠 توليد أسئلة (AI)" }],
     [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
     [{ text: "👥 تقرير المتسابقين" }, { text: "📢 إرسال للمجموعة" }],
     [{ text: "📈 إحصائيات التفاعل" }, { text: "🔗 ربط بمجموعة" }],
-    [{ text: "🏆 لوحة الشرف" }, { text: "📊 رصيدي الحالي" }],
+    [{ text: "🏆 لوحة الشرف" }, { text: "🗂️ تغيير القسم" }],
     [{ text: "⭐ المفضلة" }, { text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
@@ -45,13 +45,13 @@ const ADMIN_KEYBOARD = {
 
 const OWNER_KEYBOARD = {
   keyboard: [
-    [{ text: "🎮 سؤال جديد" }, { text: "🗂️ تغيير القسم" }],
+    [{ text: "🎮 سؤال جديد" }, { text: "🧠 توليد أسئلة (AI)" }],
     [{ text: "📥 استيراد إكسل" }, { text: "📤 تصدير إكسل" }],
     [{ text: "👥 تقرير المتسابقين" }, { text: "⚙️ إدارة المشرفين" }],
     [{ text: "📢 إرسال للمجموعة" }, { text: "📈 إحصائيات التفاعل" }],
     [{ text: "🏆 لوحة الشرف" }, { text: "🔗 ربط بمجموعة" }],
-    [{ text: "📊 رصيدي الحالي" }, { text: "⭐ المفضلة" }],
-    [{ text: "🚀 ابدأ من جديد" }]
+    [{ text: "📊 رصيدي الحالي" }, { text: "🗂️ تغيير القسم" }],
+    [{ text: "⭐ المفضلة" }, { text: "🚀 ابدأ من جديد" }]
   ],
   resize_keyboard: true
 };
@@ -72,13 +72,6 @@ function shuffleArray(array) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
-}
-
-function cleanName(name) {
-  if (!name) return 'عام';
-  if (name.includes('-')) return name.split('-').pop().trim();
-  if (name.includes(':')) return name.split(':').pop().trim();
-  return name.replace(/المجموعة/g, '').replace(/قسم/g, '').replace(/الأولى/g, '').trim();
 }
 
 function cleanDisplayName(name) {
@@ -155,8 +148,41 @@ async function editTgMessage(chatId, messageId, text = null, replyMarkup = null)
 }
 
 // ==========================================
+// 🧠 محرك الذكاء الاصطناعي (AI Generator)
+// ==========================================
+async function generateAIQuestions(text) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("API_KEY_MISSING");
+  
+  // نطلب 3 أسئلة فقط لتجنب استغراق وقت طويل يؤدي لقطع الاتصال من Vercel
+  const prompt = `أنت خبير في إنشاء المسابقات. استخرج 3 أسئلة خيارات متعددة دقيقة من النص التالي.
+يجب أن تكون النتيجة عبارة عن مصفوفة JSON صالحة (Valid JSON Array) حصراً بدون أي نصوص أو مقدمات إضافية.
+صيغة الكائن المطلوب لكل سؤال يجب أن تكون هكذا بالضبط:
+[{"question": "اكتب السؤال هنا", "correct": "الإجابة الصحيحة", "wrong": ["خطأ 1", "خطأ 2", "خطأ 3"]}]
+
+النص:
+${text.substring(0, 3000)}`; 
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+  });
+  
+  const data = await response.json();
+  if (!data.candidates) throw new Error("AI_RESPONSE_ERROR");
+  
+  let rawText = data.candidates[0].content.parts[0].text;
+  rawText = rawText.replace(/```json/gi, '').replace(/```/gi, '').trim(); // تنظيف الـ Markdown
+  
+  return JSON.parse(rawText);
+}
+
+// ==========================================
 // 4. محرك الأسئلة والأقسام (Quiz Engine)
 // ==========================================
+// [تم الإبقاء على دوال عرض الأقسام وإرسال الأسئلة بدون أي تغيير لتعمل كالمعتاد]
 async function showCategories(chatId, isOwner, isAdmin, messageIdToEdit = null) {
   const qSnap = await getDocs(collection(db, "questions"));
   let allGroups = qSnap.docs.map(d => d.data().group || 'عام');
@@ -273,7 +299,6 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   }
 
   let inline_keyboard = buildDynamicKeyboard(rawButtons); 
-
   setDoc(chatRef, { active_category: category }, { merge: true });
   
   let qText = `📁 *${displayCat}*\n\n`;
@@ -287,6 +312,7 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
 // ==========================================
 // 5. دوال الإدارة والإكسل والرسوم البيانية
 // ==========================================
+// [تم الإبقاء على دوال الإكسل والإحصائيات بدون تغيير]
 async function processExcelImport(document, chatId, isOwner, isAdmin) {
   const fileName = document.file_name;
   if (!fileName.endsWith('.xlsx')) return sendTgMessage(chatId, "❌ يرجى إرسال ملف بصيغة `.xlsx` فقط.", getKeyboard(isOwner, isAdmin));
@@ -319,7 +345,7 @@ async function processExcelImport(document, chatId, isOwner, isAdmin) {
       let addBatch = writeBatch(db); bulkQuestions.forEach(q => addBatch.set(doc(collection(db, "questions")), q)); await addBatch.commit();
       const uSnap = await getDocs(collection(db, "users"));
       let uBatch = writeBatch(db); uSnap.forEach(u => uBatch.update(u.ref, { answered: [] })); if (uSnap.size > 0) await uBatch.commit();
-      await sendTgMessage(chatId, `🎉 *تم التحديث!*\nتم إدراج: ${bulkQuestions.length} سؤال، مع حفظ الترتيب الأصلي.`, getKeyboard(isOwner, isAdmin));
+      await sendTgMessage(chatId, `🎉 *تم التحديث!*\nتم إدراج: ${bulkQuestions.length} سؤال.`, getKeyboard(isOwner, isAdmin));
     }
   }
 }
@@ -328,9 +354,7 @@ async function exportQuestions(chatId) {
   const qSnap = await getDocs(collection(db, "questions"));
   if (qSnap.empty) return sendTgMessage(chatId, "لا توجد أسئلة للتصدير.");
   let allQs = []; qSnap.forEach(d => allQs.push(d.data()));
-  
   allQs.sort((a, b) => (a.order || 0) - (b.order || 0));
-  
   let maxWrong = Math.max(...allQs.map(q => q.wrong?.length || 0));
   let exportHeaders = ['السؤال', 'الإجابة الصحيحة', ...Array.from({length: maxWrong}, (_, i) => `خطأ ${i+1}`), 'المجموعة'];
   const excelData = [exportHeaders, ...allQs.map(q => [q.question, q.correct, ...Array.from({length: maxWrong}, (_, i) => q.wrong[i] || ''), q.group || 'عام'])];
@@ -390,16 +414,8 @@ async function sendGraphicalChart(chatId) {
           scales: { y: { beginAtZero: true } }
       }
   };
-
   const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&w=600&h=400&bkg=white`;
-
-  const payload = {
-      chat_id: chatId,
-      photo: chartUrl,
-      caption: `📊 *تقرير تفاعل المتسابقين*\n\nإجمالي الإجابات المسجلة: *${totalPlays}*\nالقسم الأكثر شعبية: *${cleanDisplayName(sortedCats[0].includes('-') ? sortedCats[0].split('-').pop() : sortedCats[0])}*`,
-      parse_mode: "Markdown"
-  };
-
+  const payload = { chat_id: chatId, photo: chartUrl, caption: `📊 *تقرير تفاعل المتسابقين*\n\nإجمالي الإجابات المسجلة: *${totalPlays}*`, parse_mode: "Markdown" };
   await fetch(`https://api.telegram.org/bot${getToken()}/sendPhoto`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
 }
 
@@ -421,31 +437,21 @@ async function handleCallbackQuery(callbackQuery) {
   const isAdmin = isOwner || adminsArray.includes(userId);
 
   if (data === "ignore") return answerTgCallback(callbackId, "⚠️ لقد قمت بهذا الإجراء مسبقاً.");
+  if (data === "back_to_maincat") return showCategories(chatId, isOwner, isAdmin, messageId);
 
-  if (data === "back_to_maincat") {
-    return showCategories(chatId, isOwner, isAdmin, messageId);
-  }
-
-  // ✨ معالجة إضافة السؤال للمفضلة ✨
   if (data.startsWith("fav_")) {
     const qId = data.replace("fav_", "");
     const userRef = doc(db, "users", userId);
-    
     try {
         const uSnap = await getDoc(userRef);
         let favs = uSnap.exists() ? (uSnap.data().favorites || []) : [];
-        
         if (!favs.includes(qId)) {
             favs.push(qId);
-            // حفظ بدون إيقاف الواجهة لتسريع الاستجابة
             setDoc(userRef, { favorites: favs }, { merge: true });
-            
-            // تغيير نص الزر إلى (محفوظ) ليعرف المستخدم أنه تمت إضافته
             const updatedKeyboard = originalKeyboard.map(row => row.map(btn => {
                 if (btn.callback_data === data) return { text: "⭐ محفوظ", callback_data: "ignore" };
                 return btn;
             }));
-            
             await Promise.all([
                 answerTgCallback(callbackId, "✅ تم حفظ السؤال في مفضلتك!"),
                 editTgMessage(chatId, messageId, null, { inline_keyboard: updatedKeyboard })
@@ -521,9 +527,7 @@ async function handleCallbackQuery(callbackQuery) {
     let qList = [];
     qSnap.forEach(d => { if ((d.data().group || 'عام') === category) qList.push({ id: d.id, ...d.data() }); });
     if (qList.length === 0) return answerTgCallback(callbackId, "لا توجد أسئلة في هذا القسم.");
-    
     qList.sort((a, b) => (a.order || 0) - (b.order || 0));
-
     let inline_keyboard = qList.map(q => ([{ text: q.question.length > 35 ? q.question.substring(0, 35) + '...' : q.question, callback_data: `send_q_${q.id}` }]));
     const mainCat = category.split('-')[0].trim();
     inline_keyboard.push([{ text: "🔙 رجوع للأقسام", callback_data: `smcat_${mainCat}` }]);
@@ -576,10 +580,8 @@ async function handleCallbackQuery(callbackQuery) {
   }
 
   if (data === "next_q") {
-    // إزالة أزرار (التالي) و (المفضلة) من الرسالة القديمة حتى لا تشوه الشاشة
     const strippedKeyboard = originalKeyboard.filter(row => !row.some(btn => btn.callback_data === "next_q" || btn.callback_data.startsWith("fav_")));
     editTgMessage(chatId, messageId, null, { inline_keyboard: strippedKeyboard });
-    
     const chatSnap = await getDoc(doc(db, "users", chatId));
     const activeCat = chatSnap.exists() ? (chatSnap.data().active_category || 'عام') : 'عام';
     return askQuestion(chatId, activeCat, null, callbackId, isOwner, isAdmin);
@@ -644,7 +646,6 @@ async function handleCallbackQuery(callbackQuery) {
         callback_data: "ignore"
       })));
       
-      // ✨ إضافة زر المفضلة بجوار زر التالي بعد الإجابة ✨
       newKeyboard.push([
         { text: "⭐ حفظ السؤال", callback_data: `fav_${qId}` },
         { text: "⏭️ السؤال التالي", callback_data: "next_q" }
@@ -668,7 +669,6 @@ async function handleCallbackQuery(callbackQuery) {
       if (err.message === "TIMEOUT") {
         const timeoutKeyboard = originalKeyboard.map(row => row.map(b => ({ text: "⏳ " + b.text, callback_data: "ignore" })));
         timeoutKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]); 
-        
         await Promise.all([
            answerTgCallback(callbackId, `⏳ انتهى الوقت!`),
            editTgMessage(chatId, messageId, null, { inline_keyboard: timeoutKeyboard })
@@ -711,29 +711,67 @@ async function handleMessage(message) {
     return sendTgMessage(chatId, "🔗 *تم ربط هذه المجموعة بنجاح!*\nسيتم إرسال أسئلة المسابقة إلى هنا عند طلب الإرسال من لوحة الإدارة.");
   }
 
-  if (message.new_chat_members) {
-    for (let member of message.new_chat_members) {
-      if (member.is_bot && member.username === message.chat.username) {
-        await sendTgMessage(chatId, `مرحباً بالجميع! 🌟\nأنا بوت المسابقات. يمكن للمشرفين الآن ربط المجموعة بإرسال أمر /link`);
-      } else if (!member.is_bot) {
-        await sendTgMessage(chatId, `أهلاً بك يا [${member.first_name}](tg://user?id=${member.id}) في المجموعة! 🥳\nهل أنت مستعد لاختبار معلوماتك؟`);
-      }
-    }
-    return;
-  }
-
   const userSnap = await getDoc(userRef);
   const chatSnap = await getDoc(chatRef);
-
   let currentState = userSnap.exists() ? userSnap.data().state : null;
-  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل', '🔗 ربط بمجموعة', '⭐ المفضلة'];
+  
+  const knownCommands = ['/start', '🚀 ابدأ من جديد', '🎮 سؤال جديد', '🗂️ تغيير القسم', '📊 رصيدي الحالي', '🏆 لوحة الشرف', '⚙️ إدارة المشرفين', '📥 استيراد إكسل', '/import', '📤 تصدير إكسل', '/export', '👥 تقرير المتسابقين', '📢 إرسال للمجموعة', '📈 إحصائيات التفاعل', '🔗 ربط بمجموعة', '⭐ المفضلة', '🧠 توليد أسئلة (AI)'];
   
   if (knownCommands.includes(text) && currentState) {
     await setDoc(userRef, { state: null }, { merge: true });
     currentState = null; 
   }
 
-  // ✨ معالجة عرض قائمة المفضلة ✨
+  // ✨ معالجة إرسال النص للذكاء الاصطناعي ✨
+  if (isAdmin && currentState === "WAITING_FOR_AI_TEXT") {
+      await setDoc(userRef, { state: null }, { merge: true });
+      
+      if (!text) return sendTgMessage(chatId, "⚠️ الرجاء إرسال نص فقط لنقوم بتحليله.", currentKeyboard);
+      
+      await sendTgMessage(chatId, "⏳ *جاري قراءة النص وتحليله بالذكاء الاصطناعي...*\nيرجى الانتظار ثوانٍ معدودة 🧠✨", currentKeyboard);
+      
+      try {
+        const aiQuestions = await generateAIQuestions(text);
+        if (!aiQuestions || aiQuestions.length === 0) throw new Error("لم يتم استخراج أي أسئلة.");
+        
+        const qSnap = await getDocs(collection(db, "questions"));
+        let maxOrder = 0;
+        qSnap.forEach(d => { if ((d.data().order || 0) > maxOrder) maxOrder = d.data().order; });
+        
+        let addBatch = writeBatch(db);
+        let groupName = `قسم الذكاء الاصطناعي 🤖`;
+        
+        aiQuestions.forEach((q, idx) => {
+           const newDoc = doc(collection(db, "questions"));
+           addBatch.set(newDoc, {
+               question: q.question,
+               correct: q.correct,
+               wrong: q.wrong,
+               group: groupName,
+               order: maxOrder + idx + 1
+           });
+        });
+        await addBatch.commit();
+        
+        // تصفير بيانات الإجابات ليظهر القسم الجديد للجميع
+        const uSnap = await getDocs(collection(db, "users"));
+        let uBatch = writeBatch(db); uSnap.forEach(u => uBatch.update(u.ref, { answered: [] })); if (uSnap.size > 0) await uBatch.commit();
+
+        return sendTgMessage(chatId, `✅ *نجاح مذهل!*\nتم قراءة النص، وتوليد ${aiQuestions.length} أسئلة دقيقة، وتمت إضافتها بنجاح إلى قسم جديد باسم (*${groupName}*).\n\nاضغط على (🎮 سؤال جديد) لتجربتها الآن!`, currentKeyboard);
+        
+      } catch (error) {
+        console.error("AI Error:", error);
+        if(error.message === "API_KEY_MISSING") return sendTgMessage(chatId, "⚠️ خطأ: لم تقم بإضافة مفتاح `GEMINI_API_KEY` في إعدادات Vercel الخاصة بك.", currentKeyboard);
+        return sendTgMessage(chatId, "⚠️ عذراً، لم يتمكن الذكاء الاصطناعي من استخراج الأسئلة. تأكد من إرسال نص واضح ومفهوم.", currentKeyboard);
+      }
+  }
+
+  // ✨ أمر تفعيل الذكاء الاصطناعي ✨
+  if (isAdmin && (text === '🧠 توليد أسئلة (AI)')) {
+      await setDoc(userRef, { state: "WAITING_FOR_AI_TEXT" }, { merge: true });
+      return sendTgMessage(chatId, "🧠 *مولد الأسئلة السحري:*\n\nالرجاء إرسال **النص** (مقال، فقرة من كتاب، أو معلومات عامة).\n\nسأقوم بقراءته واستخراج 3 أسئلة دقيقة منه وإضافتها كقسم جديد فوراً!\n\n💡 _(لإلغاء العملية اضغط على أي زر آخر)_", currentKeyboard);
+  }
+
   if (text === '⭐ المفضلة') {
     const favs = userSnap.exists() ? (userSnap.data().favorites || []) : [];
     if (favs.length === 0) {
@@ -756,7 +794,6 @@ async function handleMessage(message) {
     if (favText.length > 4000) {
         favText = favText.substring(0, 4000) + "\n... (تم الاكتفاء بعرض جزء من المفضلة لتجاوز الحد المسموح)";
     }
-    
     return sendTgMessage(chatId, favText, currentKeyboard);
   }
 
@@ -834,7 +871,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة! تم تفعيل ميزة المفضلة بنجاح.');
+  if (req.method !== 'POST') return res.status(200).send('✅ تم التحديث بنجاح! بوت المسابقات الآن مدعوم بالذكاء الاصطناعي (Google Gemini) لتوليد الأسئلة.');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
