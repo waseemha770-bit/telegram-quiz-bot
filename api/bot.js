@@ -200,7 +200,6 @@ async function sendQuestionToGroup(groupId, questionDoc, category) {
   (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
   rawButtons = shuffleArray(rawButtons);
 
-  // ✨ نظام إدارة النصوص الطويلة الذكي للمجموعة ✨
   let needsMapping = rawButtons.some(b => b.text.length > 32);
   let optionsText = "";
   const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
@@ -209,7 +208,7 @@ async function sendQuestionToGroup(groupId, questionDoc, category) {
     optionsText = "\n\n*الخيارات:*\n";
     rawButtons.forEach((b, index) => {
       optionsText += `${numberEmojis[index]} ${b.text}\n`;
-      b.text = numberEmojis[index]; // تحويل النص الطويل إلى رقم فقط في الزر
+      b.text = numberEmojis[index]; 
     });
   }
 
@@ -218,7 +217,6 @@ async function sendQuestionToGroup(groupId, questionDoc, category) {
   let displayCat = cleanDisplayName(category.includes('-') ? category.split('-').pop() : category);
   let qText = `📁 *${displayCat}*\n\n`;
   if (isGold === 1) qText += `🌟 *سؤال ذهبي! نقاط مضاعفة!* 🌟\n\n`;
-  // دمج خيارات النصوص الطويلة داخل جسم الرسالة نفسها
   qText += `❓ *${q.question}*${optionsText}\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
   
   await sendTgMessage(groupId, qText, { inline_keyboard });
@@ -260,7 +258,6 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
   rawButtons = shuffleArray(rawButtons);
 
-  // ✨ نظام إدارة النصوص الطويلة الذكي للمستخدم ✨
   let needsMapping = rawButtons.some(b => b.text.length > 32);
   let optionsText = "";
   const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
@@ -269,13 +266,14 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
     optionsText = "\n\n*الخيارات:*\n";
     rawButtons.forEach((b, index) => {
       optionsText += `${numberEmojis[index]} ${b.text}\n`;
-      b.text = numberEmojis[index]; // تحويل النص الطويل إلى رقم
+      b.text = numberEmojis[index]; 
     });
   }
 
   let inline_keyboard = buildDynamicKeyboard(rawButtons); 
 
-  await setDoc(chatRef, { active_category: category }, { merge: true });
+  // 🔥 تسريع حفظ القسم النشط
+  setDoc(chatRef, { active_category: category }, { merge: true }); // بدون await لتسريع الاستجابة
   
   let qText = `📁 *${displayCat}*\n\n`;
   if (isGold === 1) qText += `🌟 *سؤال ذهبي! نقاط مضاعفة!* 🌟\n\n`;
@@ -545,12 +543,14 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (data === "next_q") {
     const strippedKeyboard = originalKeyboard.filter(row => !row.some(btn => btn.callback_data === "next_q"));
-    await editTgMessage(chatId, messageId, null, { inline_keyboard: strippedKeyboard });
+    // 🔥 تسريع: لا ننتظر تحديث الرسالة القديمة لبدء السؤال الجديد
+    editTgMessage(chatId, messageId, null, { inline_keyboard: strippedKeyboard });
     const chatSnap = await getDoc(doc(db, "users", chatId));
     const activeCat = chatSnap.exists() ? (chatSnap.data().active_category || 'عام') : 'عام';
     return askQuestion(chatId, activeCat, null, callbackId, isOwner, isAdmin);
   }
 
+  // ✨ قلب النظام لمعالجة متوازية (Parallel) فائقة السرعة ✨
   if (data.startsWith("c_") || data.startsWith("w_")) {
     const parts = data.split('_');
     const isCorrect = parts[0] === 'c';
@@ -586,7 +586,6 @@ async function handleCallbackQuery(callbackQuery) {
       let earnedPoints = 0;
       let currentStreak = uData.streak || 0;
       let categoryPlays = uData.category_plays || {};
-      
       categoryPlays[activeCat] = (categoryPlays[activeCat] || 0) + 1;
 
       if (isCorrect) {
@@ -606,29 +605,37 @@ async function handleCallbackQuery(callbackQuery) {
       let updatedChatData = { answered: [...(chatData.answered || []), qId] };
       let updatedUData = { score: (uData.score || 0) + earnedPoints, streak: currentStreak, name: userName, category_plays: categoryPlays };
 
-      if (chatId === userId) {
-          await setDoc(userRef, { ...updatedChatData, ...updatedUData }, { merge: true });
-      } else {
-          await setDoc(chatRef, updatedChatData, { merge: true });
-          await setDoc(userRef, updatedUData, { merge: true });
-      }
-
-      await answerTgCallback(callbackId, alertMsg);
-      
       const newKeyboard = originalKeyboard.map(row => row.map(btn => ({
         text: (btn.callback_data && btn.callback_data.startsWith('c_')) ? "✅ " + btn.text : (btn.callback_data === data ? "❌ " + btn.text : btn.text),
         callback_data: "ignore"
       })));
       newKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]);
-      await editTgMessage(chatId, messageId, null, { inline_keyboard: newKeyboard });
+
+      // ⚡⚡ التحديث الصاروخي: تجميع كل الأوامر وإطلاقها في نفس اللحظة ⚡⚡
+      let promises = [];
+      promises.push(answerTgCallback(callbackId, alertMsg)); // يرسل الرد الفوري للمستخدم
+      promises.push(editTgMessage(chatId, messageId, null, { inline_keyboard: newKeyboard })); // يغير شكل الزر
+      
+      if (chatId === userId) {
+          promises.push(setDoc(userRef, { ...updatedChatData, ...updatedUData }, { merge: true }));
+      } else {
+          promises.push(setDoc(chatRef, updatedChatData, { merge: true }));
+          promises.push(setDoc(userRef, updatedUData, { merge: true }));
+      }
+
+      // تشغيل الجميع معاً
+      await Promise.all(promises);
 
     } catch (err) {
       console.error("Error updating score:", err); 
       if (err.message === "TIMEOUT") {
-        await answerTgCallback(callbackId, `⏳ انتهى الوقت!`);
         const timeoutKeyboard = originalKeyboard.map(row => row.map(b => ({ text: "⏳ " + b.text, callback_data: "ignore" })));
         timeoutKeyboard.push([{ text: "⏭️ السؤال التالي", callback_data: "next_q" }]); 
-        await editTgMessage(chatId, messageId, null, { inline_keyboard: timeoutKeyboard });
+        
+        await Promise.all([
+           answerTgCallback(callbackId, `⏳ انتهى الوقت!`),
+           editTgMessage(chatId, messageId, null, { inline_keyboard: timeoutKeyboard })
+        ]);
       } else if (err.message === "ALREADY_ANSWERED") {
         await answerTgCallback(callbackId, "⚠️ لقد تم الإجابة على هذا السؤال بالفعل.");
       } else {
@@ -762,7 +769,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة! تم تفعيل نظام الترقيم الذكي للنصوص الطويلة.');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة صاروخية! تم تفعيل نظام Promise.all للاستجابة اللحظية.');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
