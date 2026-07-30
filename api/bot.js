@@ -155,7 +155,6 @@ async function editTgMessage(chatId, messageId, text = null, replyMarkup = null)
   await fetch(`https://api.telegram.org/bot${getToken()}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
 }
 
-// ✨ دالة جديدة لحذف الرسالة أثناء الانتقال الذكي ✨
 async function deleteTgMessage(chatId, messageId) {
   await fetch(`https://api.telegram.org/bot${getToken()}/deleteMessage`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -216,7 +215,7 @@ async function processBooksExcelImport(document, chatId, isOwner, isAdmin) {
           title: String(rows[i][0]).trim(), 
           date: String(rows[i][1]).trim() || "غير محدد", 
           link: String(rows[i][2]).trim(),
-          cover_link: String(rows[i][3] || '').trim() // ✨ قراءة العمود الرابع لصورة الغلاف ✨
+          cover_link: String(rows[i][3] || '').trim() 
       });
     }
 
@@ -237,20 +236,38 @@ async function processBooksExcelImport(document, chatId, isOwner, isAdmin) {
   }
 }
 
-async function showBooksLibrary(chatId) {
+// ✨ الدالة الجديدة: القائمة الرئيسية للمكتبة ✨
+async function showLibraryMenu(chatId, messageIdToEdit = null) {
+  const text = "📚 *مرحباً بك في المكتبة القرآنية*\n\nالرجاء اختيار ما تود القيام به من القائمة:";
+  const inline_keyboard = [
+    [{ text: "📖 تصفح جميع الكتب", callback_data: "browse_all_books" }],
+    [{ text: "🔍 البحث عن كتاب", callback_data: "search_book" }],
+    [{ text: "⭐ كتبي المفضلة", callback_data: "fav_books_list" }]
+  ];
+  if (messageIdToEdit) return editTgMessage(chatId, messageIdToEdit, text, { inline_keyboard });
+  return sendTgMessage(chatId, text, { inline_keyboard });
+}
+
+// ✨ تصفح كل الكتب ✨
+async function showAllBooks(chatId, messageIdToEdit = null) {
   const bSnap = await getDocs(collection(db, "books"));
   if (bSnap.empty) {
-      return sendTgMessage(chatId, "📚 *المكتبة فارغة حالياً.*\nيرجى انتظار الإدارة لرفع الكتب.");
+      const emptyMsg = "📚 *المكتبة فارغة حالياً.*\nيرجى انتظار الإدارة لرفع الكتب.";
+      if (messageIdToEdit) return editTgMessage(chatId, messageIdToEdit, emptyMsg);
+      return sendTgMessage(chatId, emptyMsg);
   }
 
   let bookButtons = [];
   bSnap.forEach(d => {
-      bookButtons.push({ text: `📖 ${d.data().title}`, callback_data: `book_${d.id}` });
+      // ترتيب عمودي: كل كتاب في سطر مستقل
+      bookButtons.push([{ text: `📖 ${d.data().title}`, callback_data: `book_${d.id}` }]);
   });
+  
+  bookButtons.push([{ text: "🔙 العودة لقائمة المكتبة", callback_data: "back_to_lib_menu" }]);
 
-  let inline_keyboard = buildDynamicKeyboard(bookButtons); 
-  const text = "📚 *المكتبة:*\n\nاختر الكتاب الذي تود قراءته أو تحميله:";
-  return sendTgMessage(chatId, text, { inline_keyboard });
+  const text = "📖 *جميع الكتب المتوفرة:*\n\nاختر الكتاب الذي تود قراءته أو تحميله:";
+  if (messageIdToEdit) return editTgMessage(chatId, messageIdToEdit, text, { inline_keyboard: bookButtons });
+  return sendTgMessage(chatId, text, { inline_keyboard: bookButtons });
 }
 
 // ==========================================
@@ -511,17 +528,58 @@ async function handleCallbackQuery(callbackQuery) {
   if (data === "ignore") return answerTgCallback(callbackId, "⚠️ لقد قمت بهذا الإجراء مسبقاً.");
   if (data === "back_to_maincat") return showCategories(chatId, isOwner, isAdmin, messageId);
 
-  // ✨ معالجة التفاعل مع زر الكتاب وإظهار الغلاف ✨
+  // ✨ معالجة أزرار قائمة المكتبة ✨
+  if (data === "browse_all_books") {
+      return showAllBooks(chatId, messageId);
+  }
+
+  if (data === "search_book") {
+      const userRef = doc(db, "users", userId);
+      await setDoc(userRef, { state: "WAITING_FOR_BOOK_SEARCH" }, { merge: true });
+      const text = "🔍 *البحث عن كتاب*\n\nالرجاء إرسال اسم الكتاب أو جزء منه في رسالة نصية الآن للبحث عنه في المكتبة:";
+      return editTgMessage(chatId, messageId, text);
+  }
+
+  if (data === "fav_books_list") {
+      const userRef = doc(db, "users", userId);
+      const uSnap = await getDoc(userRef);
+      let favs = uSnap.exists() ? (uSnap.data().favorite_books || []) : [];
+      
+      if (favs.length === 0) {
+          return answerTgCallback(callbackId, "⭐ قائمة الكتب المفضلة لديك فارغة حالياً.");
+      }
+      
+      const bSnap = await getDocs(collection(db, "books"));
+      let bookButtons = [];
+      bSnap.forEach(d => {
+          if (favs.includes(d.id)) {
+              bookButtons.push([{ text: `📖 ${d.data().title}`, callback_data: `book_${d.id}` }]);
+          }
+      });
+
+      bookButtons.push([{ text: "🔙 العودة لقائمة المكتبة", callback_data: "back_to_lib_menu" }]);
+      const text = "⭐ *الكتب المحفوظة في مفضلتك:*\n\nاختر الكتاب الذي تود قراءته:";
+      return editTgMessage(chatId, messageId, text, { inline_keyboard: bookButtons });
+  }
+
+  // ✨ الرجوع لقائمة المكتبة ✨
+  if (data === "back_to_lib_menu") {
+      await deleteTgMessage(chatId, messageId);
+      return showLibraryMenu(chatId);
+  }
+
+  // ✨ معالجة التفاعل مع كتاب محدد وإظهار تفاصيله والغلاف ✨
   if (data.startsWith("book_")) {
     const bookId = data.replace("book_", "");
     const bookDoc = await getDoc(doc(db, "books", bookId));
     if (!bookDoc.exists()) return answerTgCallback(callbackId, "⚠️ عذراً، لم يعد هذا الكتاب موجوداً.");
     
     const bData = bookDoc.data();
-    const text = `📖 *اسم الكتاب:* ${bData.title}\n📅 *تاريخ الإضافة:* ${bData.date}\n\n📥 لتحميل أو قراءة الكتاب، اضغط على زر التحميل بالأسفل 👇`;
+    const text = `📖 *اسم الكتاب:* ${bData.title}\n📅 *تاريخ الإضافة:* ${bData.date}\n\n📥 لتحميل أو قراءة الكتاب، اضغط على الخيارات بالأسفل 👇`;
     
     let inline_keyboard = [];
     
+    // ترتيب الأزرار عمودياً (زر واحد في كل صف)
     if (bData.file_id) {
         inline_keyboard.push([{ text: "📥 تحميل الكتاب داخل تيليجرام", callback_data: `dl_book_${bookId}` }]);
     } else if (bData.link) {
@@ -530,16 +588,24 @@ async function handleCallbackQuery(callbackQuery) {
         inline_keyboard.push([{ text: "🔗 فتح الرابط الخارجي", url: bookLink }]);
     }
 
+    const userRef = doc(db, "users", userId);
+    const uSnap = await getDoc(userRef);
+    let favBooks = uSnap.exists() ? (uSnap.data().favorite_books || []) : [];
+    
+    if (favBooks.includes(bookId)) {
+        inline_keyboard.push([{ text: "⭐ محفوظ في المفضلة", callback_data: "ignore" }]);
+    } else {
+        inline_keyboard.push([{ text: "⭐ حفظ الكتاب في المفضلة", callback_data: `fav_book_${bookId}` }]);
+    }
+
     if (isAdmin) {
         inline_keyboard.push([{ text: "❌ حذف هذا الكتاب", callback_data: `del_book_${bookId}` }]);
     }
 
-    inline_keyboard.push([{ text: "🔙 العودة للمكتبة", callback_data: "back_to_books" }]);
+    inline_keyboard.push([{ text: "🔙 العودة للمكتبة", callback_data: "back_to_lib_menu" }]);
     
-    // انتقال ذكي: مسح رسالة القائمة الحالية
     await deleteTgMessage(chatId, messageId);
 
-    // التحقق من وجود غلاف (سواء من الإكسل أو من الرفع المباشر)
     const photoUrl = bData.thumb_id || bData.cover_link;
 
     if (photoUrl) {
@@ -555,10 +621,38 @@ async function handleCallbackQuery(callbackQuery) {
             })
         });
     } else {
-        // إذا لم يكن هناك غلاف، نرسل الرسالة كنص عادي
         await sendTgMessage(chatId, text, { inline_keyboard });
     }
     return;
+  }
+
+  // ✨ معالجة حفظ الكتاب في المفضلة ✨
+  if (data.startsWith("fav_book_")) {
+    const bookId = data.replace("fav_book_", "");
+    const userRef = doc(db, "users", userId);
+    try {
+        const uSnap = await getDoc(userRef);
+        let favs = uSnap.exists() ? (uSnap.data().favorite_books || []) : [];
+        if (!favs.includes(bookId)) {
+            favs.push(bookId);
+            setDoc(userRef, { favorite_books: favs }, { merge: true });
+            
+            const updatedKeyboard = originalKeyboard.map(row => row.map(btn => {
+                if (btn.callback_data === data) return { text: "⭐ محفوظ في المفضلة", callback_data: "ignore" };
+                return btn;
+            }));
+            
+            await Promise.all([
+                answerTgCallback(callbackId, "✅ تم حفظ الكتاب في مفضلتك!"),
+                editTgMessage(chatId, messageId, null, { inline_keyboard: updatedKeyboard })
+            ]);
+            return;
+        } else {
+            return answerTgCallback(callbackId, "⚠️ هذا الكتاب محفوظ مسبقاً في مفضلتك.");
+        }
+    } catch(err) {
+        return answerTgCallback(callbackId, "حدث خطأ أثناء الحفظ.");
+    }
   }
 
   // ✨ معالجة تحميل الكتاب ✨
@@ -584,15 +678,10 @@ async function handleCallbackQuery(callbackQuery) {
     
     await answerTgCallback(callbackId, "✅ تم حذف الكتاب بنجاح!");
     await deleteTgMessage(chatId, messageId);
-    return showBooksLibrary(chatId);
+    return showLibraryMenu(chatId);
   }
 
-  // ✨ زر الرجوع لقائمة الكتب (يمسح صورة الغلاف) ✨
-  if (data === "back_to_books") {
-    await deleteTgMessage(chatId, messageId);
-    return showBooksLibrary(chatId);
-  }
-
+  // ✨ معالجة مفضلة الأسئلة ✨
   if (data.startsWith("fav_")) {
     const qId = data.replace("fav_", "");
     const userRef = doc(db, "users", userId);
@@ -875,9 +964,35 @@ async function handleMessage(message) {
     currentState = null; 
   }
 
-  // ✨ معالجة تصفح المكتبة ✨
+  // ✨ معالجة تصفح المكتبة عبر القائمة المصغرة ✨
   if (text === '📚 المكتبة') {
-    return showBooksLibrary(chatId);
+    return showLibraryMenu(chatId);
+  }
+
+  // ✨ معالجة البحث عن كتاب ✨
+  if (currentState === "WAITING_FOR_BOOK_SEARCH") {
+      await setDoc(userRef, { state: null }, { merge: true });
+      if (!text) return sendTgMessage(chatId, "⚠️ الرجاء إرسال نص صالح للبحث.", currentKeyboard);
+      
+      await sendTgMessage(chatId, "🔍 *جاري البحث في المكتبة...*");
+      
+      const bSnap = await getDocs(collection(db, "books"));
+      let bookButtons = [];
+      const searchTarget = text.toLowerCase();
+      
+      bSnap.forEach(d => {
+          const title = (d.data().title || "").toLowerCase();
+          if (title.includes(searchTarget)) {
+              bookButtons.push([{ text: `📖 ${d.data().title}`, callback_data: `book_${d.id}` }]);
+          }
+      });
+      
+      if (bookButtons.length === 0) {
+          return sendTgMessage(chatId, `⚠️ لم أتمكن من العثور على أي كتاب يطابق بحثك عن: *${text}*`, currentKeyboard);
+      }
+  
+      bookButtons.push([{ text: "🔙 العودة لقائمة المكتبة", callback_data: "back_to_lib_menu" }]);
+      return sendTgMessage(chatId, `🔍 *نتائج البحث عن:* ${text}\n\nاختر الكتاب من القائمة التالية:`, { inline_keyboard: bookButtons });
   }
 
   // ✨ معالجة الذكاء الاصطناعي ✨
@@ -924,11 +1039,11 @@ async function handleMessage(message) {
       return sendTgMessage(chatId, "🧠 *مولد الأسئلة السحري (مع المراجعة):*\n\nالرجاء إرسال **النص** (مقال، فقرة من كتاب، أو معلومات عامة).\n\nسأقوم بقراءته واستخراج أسئلة دقيقة منه وإرسالها لك في **ملف إكسل** لتراجعها قبل اعتمادها!\n\n💡 _(لإلغاء العملية اضغط على أي زر آخر)_", currentKeyboard);
   }
 
-  // ✨ معالجة المفضلة ✨
+  // ✨ معالجة مفضلة الأسئلة ✨
   if (text === '⭐ المفضلة') {
     const favs = userSnap.exists() ? (userSnap.data().favorites || []) : [];
     if (favs.length === 0) {
-        return sendTgMessage(chatId, "⭐ *مفضلتك فارغة!*\n\nلم تقم بحفظ أي أسئلة بعد.\nعند الإجابة على أي سؤال، اضغط على زر (⭐ حفظ السؤال) ليظهر هنا للرجوع إليه لاحقاً.", currentKeyboard);
+        return sendTgMessage(chatId, "⭐ *مفضلتك للأسئلة فارغة!*\n\nلم تقم بحفظ أي أسئلة بعد.\nعند الإجابة على أي سؤال، اضغط على زر (⭐ حفظ السؤال) ليظهر هنا للرجوع إليه لاحقاً.", currentKeyboard);
     }
     
     await sendTgMessage(chatId, "⏳ جاري جلب أسئلتك المفضلة...");
@@ -992,7 +1107,6 @@ async function handleMessage(message) {
     title = title.replace(/\.[^/.]+$/, ""); 
     
     const fileId = document.file_id;
-    // التقاط صورة الغلاف المصغرة إن وجدت
     const thumbId = document.thumbnail ? document.thumbnail.file_id : (document.thumb ? document.thumb.file_id : null);
     
     const dateOptions = { year: 'numeric', month: 'long', day: 'numeric' };
