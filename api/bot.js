@@ -10,7 +10,6 @@ const firebaseConfig = {
   projectId: process.env.FIREBASE_PROJECT_ID,
 };
 
-// ✨ تأمين الاتصال لبيئة Vercel (تجنب تكرار فتح التطبيق) ✨
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 const db = initializeFirestore(app, { experimentalForceLongPolling: true });
 
@@ -200,12 +199,28 @@ async function sendQuestionToGroup(groupId, questionDoc, category) {
   let rawButtons = [{ text: q.correct, callback_data: `c_${qId}_${timestamp}_${isGold}` }];
   (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
   rawButtons = shuffleArray(rawButtons);
+
+  // ✨ نظام إدارة النصوص الطويلة الذكي للمجموعة ✨
+  let needsMapping = rawButtons.some(b => b.text.length > 32);
+  let optionsText = "";
+  const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
+
+  if (needsMapping) {
+    optionsText = "\n\n*الخيارات:*\n";
+    rawButtons.forEach((b, index) => {
+      optionsText += `${numberEmojis[index]} ${b.text}\n`;
+      b.text = numberEmojis[index]; // تحويل النص الطويل إلى رقم فقط في الزر
+    });
+  }
+
   let inline_keyboard = buildDynamicKeyboard(rawButtons); 
 
   let displayCat = cleanDisplayName(category.includes('-') ? category.split('-').pop() : category);
   let qText = `📁 *${displayCat}*\n\n`;
   if (isGold === 1) qText += `🌟 *سؤال ذهبي! نقاط مضاعفة!* 🌟\n\n`;
-  qText += `❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
+  // دمج خيارات النصوص الطويلة داخل جسم الرسالة نفسها
+  qText += `❓ *${q.question}*${optionsText}\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
+  
   await sendTgMessage(groupId, qText, { inline_keyboard });
 }
 
@@ -244,13 +259,27 @@ async function askQuestion(chatId, category, messageIdToEdit = null, callbackId 
   let rawButtons = [{ text: q.correct, callback_data: `c_${qId}_${timestamp}_${isGold}` }];
   (q.wrong || []).forEach((w, idx) => { if(w) rawButtons.push({ text: w, callback_data: `w_${qId}_${idx}_${timestamp}_${isGold}` }) });
   rawButtons = shuffleArray(rawButtons);
+
+  // ✨ نظام إدارة النصوص الطويلة الذكي للمستخدم ✨
+  let needsMapping = rawButtons.some(b => b.text.length > 32);
+  let optionsText = "";
+  const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
+
+  if (needsMapping) {
+    optionsText = "\n\n*الخيارات:*\n";
+    rawButtons.forEach((b, index) => {
+      optionsText += `${numberEmojis[index]} ${b.text}\n`;
+      b.text = numberEmojis[index]; // تحويل النص الطويل إلى رقم
+    });
+  }
+
   let inline_keyboard = buildDynamicKeyboard(rawButtons); 
 
   await setDoc(chatRef, { active_category: category }, { merge: true });
   
   let qText = `📁 *${displayCat}*\n\n`;
   if (isGold === 1) qText += `🌟 *سؤال ذهبي! نقاط مضاعفة!* 🌟\n\n`;
-  qText += `❓ *${q.question}*\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
+  qText += `❓ *${q.question}*${optionsText}\n\n⏱️ أمامك ${TIME_LIMIT_SECONDS} ثانية للإجابة!`;
   
   if (messageIdToEdit) return editTgMessage(chatId, messageIdToEdit, qText, { inline_keyboard });
   return sendTgMessage(chatId, qText, { inline_keyboard });
@@ -522,7 +551,6 @@ async function handleCallbackQuery(callbackQuery) {
     return askQuestion(chatId, activeCat, null, callbackId, isOwner, isAdmin);
   }
 
-  // ✨ المعالجة المتسلسلة والمستقرة للإجابات (بدون Transaction لتناسب Vercel) ✨
   if (data.startsWith("c_") || data.startsWith("w_")) {
     const parts = data.split('_');
     const isCorrect = parts[0] === 'c';
@@ -542,7 +570,6 @@ async function handleCallbackQuery(callbackQuery) {
     let alertMsg = "";
 
     try {
-      // 1. القراءة المباشرة
       const chatSnap = await getDoc(chatRef);
       const uSnap = (chatId === userId) ? chatSnap : await getDoc(userRef);
       
@@ -579,7 +606,6 @@ async function handleCallbackQuery(callbackQuery) {
       let updatedChatData = { answered: [...(chatData.answered || []), qId] };
       let updatedUData = { score: (uData.score || 0) + earnedPoints, streak: currentStreak, name: userName, category_plays: categoryPlays };
 
-      // 2. الكتابة المباشرة (مقاومة لانقطاع Vercel)
       if (chatId === userId) {
           await setDoc(userRef, { ...updatedChatData, ...updatedUData }, { merge: true });
       } else {
@@ -606,7 +632,6 @@ async function handleCallbackQuery(callbackQuery) {
       } else if (err.message === "ALREADY_ANSWERED") {
         await answerTgCallback(callbackId, "⚠️ لقد تم الإجابة على هذا السؤال بالفعل.");
       } else {
-        // ✨ الكاشف السحري للأخطاء: سيعرض لك سبب العطل البرمجي إن حدث!
         await answerTgCallback(callbackId, `⚠️ خطأ: ${err.message}`);
       }
     }
@@ -737,7 +762,7 @@ async function handleMessage(message) {
 // 8. النقطة الرئيسية (Vercel Handler)
 // ==========================================
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة. تم تغيير نظام المعاملات ليتناسب تماماً مع استضافة Vercel!');
+  if (req.method !== 'POST') return res.status(200).send('✅ البوت يعمل بكفاءة! تم تفعيل نظام الترقيم الذكي للنصوص الطويلة.');
   try {
     const body = req.body;
     if (body.callback_query) await handleCallbackQuery(body.callback_query);
